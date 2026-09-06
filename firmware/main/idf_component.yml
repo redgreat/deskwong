@@ -1,0 +1,6 @@
+## IDF Component Manager Manifest File
+dependencies:
+  idf: ">=5.0.0"
+  lvgl/lvgl: "^8.4.0"
+  espressif/mdns: "^1.4.0"
+  espressif/esp_codec_dev: "~1.4.0"
