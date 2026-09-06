@@ -1,0 +1,55 @@
+name: build-firmware
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build Svelte web
+        run: |
+          cd web
+          npm install
+          npm run build
+
+      - name: Build firmware (ESP-IDF)
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.1
+          target: esp32s3
+          path: firmware
+
+      - name: Generate SPIFFS image
+        run: |
+          mkdir -p spiffs_tmp/www
+          cp -r web/dist/* spiffs_tmp/www/
+          python "$IDF_PATH/components/spiffs/spiffsgen.py" 0x7E0000 spiffs_tmp spiffs.bin
+
+      - name: Merge flash image
+        run: |
+          pip install esptool
+          python -m esptool --chip esp32s3 merge_bin -o deskwong-merged.bin \
+            0x0 firmware/build/bootloader/bootloader.bin \
+            0x8000 firmware/build/partition_table/partition-table.bin \
+            0x20000 firmware/build/deskwong.bin \
+            0x820000 spiffs.bin
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: deskwong-firmware
+          path: |
+            deskwong-merged.bin
+            firmware/build/deskwong.bin
+            firmware/build/bootloader/bootloader.bin
+            firmware/build/partition_table/partition-table.bin
+            spiffs.bin

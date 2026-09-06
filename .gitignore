@@ -67,3 +67,26 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# ---- deskwong 追加 ----
+# ESP-IDF 构建产物
+firmware/build/
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/dependencies.lock
+firmware/managed_components/
+
+# 前端
+web/node_modules/
+web/dist/
+
+# Python
+__pycache__/
+*.pyc
+
+# 工具输出
+tools/*.bin
+*.bin
+
+# SPIFFS 临时打包目录
+build_dist/
