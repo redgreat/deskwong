@@ -53,6 +53,12 @@ def ai_usage():
         "data": {
             "updated_at": now_iso(),
             "providers": [
+                {"id": "chatgpt_5h", "name": "ChatGPT", "label": "5小时",
+                 "window_minutes": 300, "remaining_percent": 72,
+                 "resets_at": int(time.time()) + 5 * 3600, "status": "normal"},
+                {"id": "chatgpt_weekly", "name": "ChatGPT", "label": "每周",
+                 "window_minutes": 10080, "remaining_percent": 44,
+                 "resets_at": int(time.time()) + 7 * 86400, "status": "normal"},
                 {"id": "deepseek", "name": "DeepSeek", "label": "今日 Token",
                  "value": 1234567, "unit": "tokens", "display": "123.5万", "status": "normal"},
                 {"id": "codex", "name": "Codex", "label": "剩余额度",

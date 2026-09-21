@@ -1,0 +1,9 @@
+.git
+build
+firmware/build
+firmware/managed_components
+web/node_modules
+web/dist
+conf/config.yml
+log
+design

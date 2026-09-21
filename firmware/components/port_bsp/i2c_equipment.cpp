@@ -185,21 +185,23 @@ void Rtc_Setup(I2cMasterBus *i2cbus,uint8_t dev_addr) {
 void Rtc_SetTime(uint16_t year,uint8_t month,uint8_t day,uint8_t hour,uint8_t minute,uint8_t second) {
     if (I2cRTCdev == NULL) return;
     uint8_t buf[7] = {
-        (uint8_t)(dec2bcd(second) & 0x7F),  // 0x00 seconds, 清 OS 标志
-        dec2bcd(minute),                    // 0x01 minutes
-        dec2bcd(hour),                      // 0x02 hours
-        dec2bcd(day),                       // 0x03 days (weekday 位写 0)
-        dec2bcd(month),                     // 0x04 months
-        dec2bcd((uint8_t)(year % 100)),     // 0x05 years
-        0x00                                // 0x06 control
+        (uint8_t)(dec2bcd(second) & 0x7F),  // 0x04 seconds, 清 OS 标志
+        dec2bcd(minute),                    // 0x05 minutes
+        dec2bcd(hour),                      // 0x06 hours
+        dec2bcd(day),                       // 0x07 days
+        0x00,                               // 0x08 weekday（由上层计算）
+        dec2bcd(month),                     // 0x09 months
+        dec2bcd((uint8_t)(year % 100))      // 0x0A years
     };
-    I2cbus_->i2c_write_buff(I2cRTCdev, 0x00, buf, 7);
+    I2cbus_->i2c_write_buff(I2cRTCdev, 0x04, buf, 7);
 }
 
 void Rtc_GetTime(rtcTimeStruct_t *time) {
+    if (!time) return;
+    *time = {};
     if (I2cRTCdev == NULL) return;
     uint8_t buf[7] = {0};
-    int ret = I2cbus_->i2c_read_buff(I2cRTCdev, 0x00, buf, 7);
+    int ret = I2cbus_->i2c_read_buff(I2cRTCdev, 0x04, buf, 7);
     if (ret != ESP_OK) {
         ESP_LOGW("rtc", "read failed");
         return;
@@ -208,7 +210,7 @@ void Rtc_GetTime(rtcTimeStruct_t *time) {
     time->minute = bcd2dec((uint8_t)(buf[1] & 0x7F));
     time->hour   = bcd2dec((uint8_t)(buf[2] & 0x3F));
     time->day    = bcd2dec((uint8_t)(buf[3] & 0x3F));
-    time->month  = bcd2dec((uint8_t)(buf[4] & 0x1F));
-    time->year   = 2000 + bcd2dec(buf[5]);
-    time->week   = 0; // 由调用方按日期另行计算
+    time->week   = bcd2dec((uint8_t)(buf[4] & 0x07));
+    time->month  = bcd2dec((uint8_t)(buf[5] & 0x1F));
+    time->year   = 2000 + bcd2dec(buf[6]);
 }

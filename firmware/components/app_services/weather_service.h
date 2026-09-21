@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -12,7 +13,9 @@ typedef struct {
     int wind_scale;
 } weather_now_t;
 
-void weather_service_init(const char *location, const char *key);
+void weather_service_init(const char *api_url, const char *location, const char *key);
+/* Returns true once after configuration changes so the worker can refresh immediately. */
+bool weather_service_take_changed(void);
 /* 拉取当前天气，成功返回 0，失败返回 1 */
 int weather_service_fetch(weather_now_t *out);
 

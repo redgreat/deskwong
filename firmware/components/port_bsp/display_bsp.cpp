@@ -4,6 +4,14 @@
 #include <esp_log.h>
 #include "display_bsp.h"
 
+static bool on_color_trans_done(esp_lcd_panel_io_handle_t panel_io,
+                                esp_lcd_panel_io_event_data_t *edata,
+                                void *user_ctx) {
+    BaseType_t high_task_woken = pdFALSE;
+    xSemaphoreGiveFromISR((SemaphoreHandle_t)user_ctx, &high_task_woken);
+    return high_task_woken == pdTRUE;
+}
+
 DisplayPort::DisplayPort(int mosi, int scl, int dc, int cs, int rst, int width, int height, spi_host_device_t spihost) : 
 mosi_(mosi), 
 scl_(scl), 
@@ -35,6 +43,12 @@ height_(height)
     io_config.trans_queue_depth = 10;
 
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)spihost, &io_config, &io_handle));
+
+    color_done_sem = xSemaphoreCreateBinary();
+    assert(color_done_sem);
+    esp_lcd_panel_io_callbacks_t callbacks = {};
+    callbacks.on_color_trans_done = on_color_trans_done;
+    ESP_ERROR_CHECK(esp_lcd_panel_io_register_event_callbacks(io_handle, &callbacks, color_done_sem));
 
     gpio_config_t gpio_conf = {};
     gpio_conf.intr_type     = GPIO_INTR_DISABLE;
@@ -201,6 +215,24 @@ void DisplayPort::RLCD_Display() {
 	RLCD_Sendbuffera(DispBuffer,DisplayLen);
 }
 
+void DisplayPort::RLCD_DisplayXRange(uint16_t x1, uint16_t x2) {
+    if (x1 >= (uint16_t)width_ || x2 >= (uint16_t)width_ || x1 > x2) return;
+    uint16_t start_pair = x1 >> 1;
+    uint16_t end_pair = x2 >> 1;
+    uint16_t rows_per_pair = height_ >> 2;
+    uint32_t offset = (uint32_t)start_pair * rows_per_pair;
+    uint32_t len = (uint32_t)(end_pair - start_pair + 1) * rows_per_pair;
+
+    RLCD_SendCommand(0x2A);
+    RLCD_SendData(0x12);
+    RLCD_SendData(0x2A);
+    RLCD_SendCommand(0x2B);
+    RLCD_SendData(start_pair & 0xff);
+    RLCD_SendData(end_pair & 0xff);
+    RLCD_SendCommand(0x2c);
+    RLCD_Sendbuffera(DispBuffer + offset, len);
+}
+
 void DisplayPort::RLCD_Reset(void) {
     Set_ResetIOLevel(1);
     vTaskDelay(pdMS_TO_TICKS(50));
@@ -219,7 +251,17 @@ void DisplayPort::RLCD_SendData(uint8_t Data) {
 }
 
 void DisplayPort::RLCD_Sendbuffera(uint8_t *Data, int len) {
-    ESP_ERROR_CHECK(esp_lcd_panel_io_tx_color(io_handle, -1, Data, len));
+    /* tx_color is asynchronous. Drain a stale signal, queue one frame, then
+     * wait for its completion callback before DispBuffer can be modified. */
+    xSemaphoreTake(color_done_sem, 0);
+    esp_err_t err = esp_lcd_panel_io_tx_color(io_handle, -1, Data, len);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "display transfer queue failed: %s", esp_err_to_name(err));
+        return;
+    }
+    if (xSemaphoreTake(color_done_sem, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        ESP_LOGE(TAG, "display transfer timed out");
+    }
 }
 
 void DisplayPort::Set_ResetIOLevel(uint8_t level) {

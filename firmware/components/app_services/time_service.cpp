@@ -1,5 +1,7 @@
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <stdlib.h>
 #include "esp_log.h"
 #include "esp_netif_sntp.h"
 #include "freertos/FreeRTOS.h"
@@ -11,12 +13,41 @@
 
 static const char *TAG = "time";
 
+static bool datetime_valid(const rtcTimeStruct_t &t) {
+    return t.year >= 2025 && t.year <= 2099 && t.month >= 1 && t.month <= 12 &&
+           t.day >= 1 && t.day <= 31 && t.hour <= 23 && t.minute <= 59 && t.second <= 59;
+}
+
+static datetime_t build_datetime(void) {
+    static const char *months = "JanFebMarAprMayJunJulAugSepOctNovDec";
+    char mon[4] = {};
+    datetime_t dt = {};
+    sscanf(__DATE__, "%3s %d %d", mon, &dt.day, &dt.year);
+    const char *p = strstr(months, mon);
+    dt.month = p ? (int)((p - months) / 3) + 1 : 1;
+    sscanf(__TIME__, "%d:%d:%d", &dt.hour, &dt.minute, &dt.second);
+    return dt;
+}
+
 esp_err_t time_service_init(void *i2c_bus, const char *timezone) {
+    // ESP-IDF/newlib uses POSIX TZ strings, not desktop IANA zone files.
+    const char *tz = timezone && *timezone ? timezone : "Asia/Shanghai";
+    setenv("TZ", strcmp(tz, "Asia/Shanghai") == 0 ? "CST-8" : tz, 1);
+    tzset();
     /* 默认东八区 Asia/Shanghai */
     setenv("TZ", "CST-8", 1);
     tzset();
     I2cMasterBus *bus = (I2cMasterBus *)i2c_bus;
     Rtc_Setup(bus, 0x51);   // PCF85063
+    rtcTimeStruct_t rtc = {};
+    Rtc_GetTime(&rtc);
+    if (!datetime_valid(rtc)) {
+        datetime_t fallback = build_datetime();
+        time_service_set(&fallback);
+        ESP_LOGW(TAG, "RTC invalid, initialized from build time: %04d-%02d-%02d %02d:%02d:%02d",
+                 fallback.year, fallback.month, fallback.day,
+                 fallback.hour, fallback.minute, fallback.second);
+    }
     ESP_LOGI(TAG, "time service init, tz=%s", timezone ? timezone : "Asia/Shanghai");
     return ESP_OK;
 }

@@ -46,7 +46,9 @@ cd /d <本项目路径>
 tools\flash.bat
 ```
 
-> `tools\flash.bat` 默认串口 `COM3`，请按设备管理器里的实际串口号修改。
+> `tools\flash.bat` 默认串口 `COM7`；可用 `tools\flash.bat COM3` 指定其他端口。编译、资源打包或烧录失败会立即停止。
+
+当前首页固件版本为 `0.2.1-ui3`。启动日志和 `/api/health` 可核对实际版本、编译时间及运行分区。`firmware/build/deskwong.bin` 是应用镜像（本项目 ota_0 地址 `0x20000`），不能当作地址 `0x0` 的合并镜像刷写。完整串口脚本会初始化 OTA 选择以启动刚写入的 ota_0。
 
 ### 2. 用合并镜像一键刷（推荐，无需编译）
 

@@ -1,9 +1,25 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <freertos/FreeRTOS.h>
 #include <esp_log.h>
 #include <esp_timer.h>
 #include "lvgl_bsp.h"
+#include "lvgl_memory_pool.h"
+#include "esp_heap_caps.h"
+
+extern "C" void *deskwong_lvgl_pool(size_t size) {
+    static void *pool = NULL;
+    static size_t capacity = 0;
+    if (!pool) {
+        pool = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!pool) abort();
+        capacity = size;
+        ESP_LOGI("LvglPort", "UI pool: %u bytes in PSRAM", (unsigned)size);
+    }
+    if (size > capacity) abort();
+    return pool;
+}
 
 static lv_disp_draw_buf_t disp_buf; 		// contains internal graphic buffer(s) called draw buffer(s)
 static lv_disp_drv_t disp_drv;      		// contains callback functions
@@ -66,7 +82,7 @@ void Lvgl_PortInit(int width, int height,DispFlushCb flush_cb) {
   	disp_drv.hor_res = width;
   	disp_drv.ver_res = height;
   	disp_drv.flush_cb = flush_cb;
-	disp_drv.full_refresh = 1;
+	disp_drv.full_refresh = 0;
   	disp_drv.draw_buf = &disp_buf;
   	lv_disp_drv_register(&disp_drv);
 
@@ -78,5 +94,12 @@ void Lvgl_PortInit(int width, int height,DispFlushCb flush_cb) {
   	ESP_ERROR_CHECK(esp_timer_create(&lvgl_tick_timer_args, &lvgl_tick_timer));
   	ESP_ERROR_CHECK(esp_timer_start_periodic(lvgl_tick_timer,LVGL_TICK_PERIOD_MS * 1000));
 
-    xTaskCreatePinnedToCore(Lvgl_port_task, "LVGL", 8 * 1024, NULL, 5, NULL, 0);
+    BaseType_t task_ok = xTaskCreatePinnedToCoreWithCaps(
+        Lvgl_port_task, "LVGL", 8 * 1024, NULL, 5, NULL, 0,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (task_ok != pdPASS) {
+        ESP_LOGE(TAG, "failed to create LVGL task");
+        abort();
+    }
+    ESP_LOGI(TAG, "LVGL task started in PSRAM");
 }

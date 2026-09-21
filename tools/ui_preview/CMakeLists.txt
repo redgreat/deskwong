@@ -1,0 +1,18 @@
+cmake_minimum_required(VERSION 3.16)
+project(deskwong_ui_preview C CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(ROOT "${CMAKE_CURRENT_LIST_DIR}/../..")
+set(LV_CONF_PATH "${CMAKE_CURRENT_LIST_DIR}/lv_conf.h" CACHE STRING "" FORCE)
+add_subdirectory("${ROOT}/firmware/managed_components/lvgl__lvgl" lvgl)
+file(GLOB UI_FONTS "${ROOT}/firmware/components/app_ui/font_*.c")
+add_executable(ui_preview preview.cpp "${ROOT}/firmware/components/app_ui/main_screen.cpp"
+    "${ROOT}/firmware/components/app_services/calendar_service.c" ${UI_FONTS})
+target_include_directories(ui_preview PRIVATE "${ROOT}/firmware/components/app_ui" "${ROOT}/firmware/components/app_services")
+target_link_libraries(ui_preview PRIVATE lvgl)
+target_compile_options(ui_preview PRIVATE -UNDEBUG)
+
+if(DEFINED CJSON_DIR)
+    add_executable(aiusage_test aiusage_test.c "${ROOT}/firmware/components/app_services/aiusage_service.c" "${CJSON_DIR}/cJSON.c")
+    target_include_directories(aiusage_test PRIVATE stubs "${ROOT}/firmware/components/app_services" "${CJSON_DIR}")
+    target_compile_options(aiusage_test PRIVATE -UNDEBUG)
+endif()

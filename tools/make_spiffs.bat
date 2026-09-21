@@ -9,16 +9,20 @@ set OUT=%ROOT%\firmware\build\spiffs.bin
 set TMP=%ROOT%\build\spiffs_tmp
 
 echo ==^> 构建前端 web/dist ...
-pushd %ROOT%\web
+pushd "%ROOT%\web"
 call npm install
+if errorlevel 1 (popd & exit /b 1)
 call npm run build
+if errorlevel 1 (popd & exit /b 1)
 popd
 
 echo ==^> 打包 SPIFFS（www/） ...
 if exist "%TMP%" rmdir /s /q "%TMP%"
 mkdir "%TMP%\www"
 xcopy /s /e /y "%WEB_DIST%\*" "%TMP%\www\" >nul
+if errorlevel 1 exit /b 1
 if not exist "%ROOT%\firmware\build" mkdir "%ROOT%\firmware\build"
 python "%IDF_PATH%\components\spiffs\spiffsgen.py" %SPIFFS_SIZE% "%TMP%" "%OUT%"
+if errorlevel 1 exit /b 1
 rmdir /s /q "%TMP%"
 echo ==^> 生成 %OUT%

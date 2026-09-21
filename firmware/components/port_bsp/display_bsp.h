@@ -5,6 +5,7 @@
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_vendor.h>
 #include <esp_lcd_panel_ops.h>
+#include <freertos/semphr.h>
 
 
 #define AlgorithmOptimization  3     //1:原始算法 2:采用移位算法 3:查表法   来优化CPU
@@ -17,6 +18,7 @@ enum ColorSelection {
 class DisplayPort {
 private:
     esp_lcd_panel_io_handle_t io_handle = NULL;
+    SemaphoreHandle_t color_done_sem = NULL;
     uint32_t            i2c_data_pdMS_TICKS = 0;
     uint32_t            i2c_done_pdMS_TICKS = 0;
     const char         *TAG                 = "Display";
@@ -48,6 +50,7 @@ public:
     void RLCD_Init();
     void RLCD_ColorClear(uint8_t color);
     void RLCD_Display();
+    void RLCD_DisplayXRange(uint16_t x1, uint16_t x2);
 	#if (AlgorithmOptimization != 3)
     void RLCD_SetPortraitPixel(uint16_t x, uint16_t y, uint8_t color);      //竖屏显示
     void RLCD_SetLandscapePixel(uint16_t x, uint16_t y, uint8_t color);     //横屏显示

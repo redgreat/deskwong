@@ -1,4 +1,5 @@
 #pragma once
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -12,6 +13,9 @@ typedef struct {
     char label[32];
     char display[32];
     char status[16];
+    int window_minutes;       // 300 = 5 hours, 10080 = weekly
+    float remaining_percent;  // -1 when unavailable
+    int64_t resets_at;         // Unix seconds, 0 when unavailable
 } ai_provider_t;
 
 void aiusage_service_init(const char *base, const char *token);

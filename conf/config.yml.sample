@@ -1,0 +1,48 @@
+# 复制为 config.yml 后填写。
+# 设备侧配置（天气 / 工时 / AI 用量 / MQTT 上传 / RaceBox 蓝牙）都在设备后台网页配置页维护，
+# 这里只保留：监听端口、鉴权 token、MQTT 消费端的数据库地址。
+#
+# 工时与 AI 用量的上游不写在本文件，改用环境变量：
+#   DESKWONG_WORKTIME_UPSTREAM   可选，工时代理上游
+#   DESKWONG_AI_UPSTREAM         可选，AI 用量的自定义适配器（留空则用内置 Codex 抓取）
+#   DESKWONG_CODEX_ACCESS_TOKEN  Codex OAuth access token
+#   DESKWONG_CODEX_AUTH_FILE     Codex auth.json 路径，默认 ~/.codex/auth.json
+
+server:
+  listen: ":8001"
+  token: "change-me"
+  tokens: []
+  allow_cidrs: []
+
+worktime:
+  expected_daily_hours: 8
+  token: ""
+  mysql:
+    dsn: "user:pass@tcp(host:3306)/pingcode?parseTime=true&loc=Asia%2FShanghai"
+    employee_no: ""
+    query_file: "/app/conf/worktime.sql"
+    query: ""
+    timeout_sec: 10
+
+database:
+  dsn: "postgres://user:pass@host:5432/deskwong?sslmode=require"
+  max_conns: 4
+  min_conns: 1
+  retention_days: 180
+
+mqtt:
+  enabled: false
+  broker: "ssl://mqtt.example.com:8883"
+  tls: true
+  username: ""
+  password: ""
+  client_id: "deskwong-service"
+  topic: "deskwong/racebox/data"
+  qos: 1
+  queue_size: 1024
+  batch_size: 64
+  flush_interval_ms: 500
+
+log:
+  level: "info"
+  format: "text"

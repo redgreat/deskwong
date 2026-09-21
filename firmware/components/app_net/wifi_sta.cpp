@@ -47,9 +47,11 @@ esp_err_t wifi_init(const char *ssid, const char *pass) {
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
-    ESP_ERROR_CHECK(mdns_init());
-    mdns_hostname_set("deskwong");
-    mdns_instance_name_set("deskwong 桌面摆件");
+    esp_err_t mdns_err = mdns_init();
+    if (mdns_err == ESP_OK) {
+        mdns_hostname_set("deskwong");
+        mdns_instance_name_set("deskwong 桌面摆件");
+    } else ESP_LOGW(TAG, "mDNS unavailable: %s; use device IP", esp_err_to_name(mdns_err));
 
     if (ssid == NULL || ssid[0] == '\0') {
         /* 未配置 WiFi：进入 AP 模式，供手机/电脑连接后配置 */

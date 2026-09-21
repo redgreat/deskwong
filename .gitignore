@@ -90,3 +90,7 @@ tools/*.bin
 
 # SPIFFS 临时打包目录
 build_dist/
+
+# 本地服务配置与运行日志（仅提交 sample）
+conf/config.yml
+log/
