@@ -10,6 +10,7 @@ typedef struct {
     float recorded_hours;
     float expected_hours;
     float ratio;   // recorded/expected，由设备端算
+    float daily_hours[32]; // 1..31，每日已记录工时
 } worktime_summary_t;
 
 void worktime_service_init(const char *base, const char *token);

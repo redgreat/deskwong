@@ -3,9 +3,9 @@
 
 #include "driver/gpio.h"
 
-/* LCD（单色全反射 RLCD，竖屏 300×400） */
-#define LCD_WIDTH      300
-#define LCD_HEIGHT     400
+/* LCD（单色全反射 RLCD，原生横屏 400×300） */
+#define LCD_WIDTH      400
+#define LCD_HEIGHT     300
 
 #define RLCD_DC_PIN    GPIO_NUM_5
 #define RLCD_CS_PIN    GPIO_NUM_40

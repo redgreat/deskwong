@@ -40,6 +40,7 @@ jobs:
           python -m esptool --chip esp32s3 merge_bin -o deskwong-merged.bin \
             0x0 firmware/build/bootloader/bootloader.bin \
             0x8000 firmware/build/partition_table/partition-table.bin \
+            0xf000 firmware/build/ota_data_initial.bin \
             0x20000 firmware/build/deskwong.bin \
             0x820000 spiffs.bin
 

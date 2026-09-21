@@ -32,11 +32,22 @@ int aiusage_service_fetch(ai_provider_t *out, int max, int *count) {
         cJSON *it;
         cJSON_ArrayForEach(it, providers) {
             if (n >= max) break;
+            memset(&out[n], 0, sizeof(out[n]));
+            out[n].remaining_percent = -1;
             cpy(out[n].id, sizeof(out[n].id), cJSON_GetObjectItem(it, "id"));
             cpy(out[n].name, sizeof(out[n].name), cJSON_GetObjectItem(it, "name"));
             cpy(out[n].label, sizeof(out[n].label), cJSON_GetObjectItem(it, "label"));
             cpy(out[n].display, sizeof(out[n].display), cJSON_GetObjectItem(it, "display"));
             cpy(out[n].status, sizeof(out[n].status), cJSON_GetObjectItem(it, "status"));
+            cJSON *window = cJSON_GetObjectItem(it, "window_minutes");
+            cJSON *remaining = cJSON_GetObjectItem(it, "remaining_percent");
+            cJSON *used = cJSON_GetObjectItem(it, "used_percent");
+            cJSON *reset = cJSON_GetObjectItem(it, "resets_at");
+            if (cJSON_IsNumber(window)) out[n].window_minutes = window->valueint;
+            if (cJSON_IsNumber(remaining)) out[n].remaining_percent = remaining->valuedouble;
+            else if (cJSON_IsNumber(used)) out[n].remaining_percent = 100 - used->valuedouble;
+            if (cJSON_IsNumber(reset) && reset->valuedouble > 0)
+                out[n].resets_at = (int64_t)reset->valuedouble;
             n++;
         }
     }
