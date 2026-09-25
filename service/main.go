@@ -1,17 +1,7 @@
-// deskwong service
-//
-// 职责：
-//  1. MQTT 消费端：订阅设备上传的 RaceBox 数据并落库（表 racebox_messages）
-//  2. 设备后台网页配置页的「工时获取」「AI 用量」两个接口的后端
-//
-// 设备侧配置（天气 / 工时 / AI 用量 / MQTT 上传 / RaceBox 蓝牙）一律在设备后台网页配置页维护，
-// 本服务只从 conf/config.yml 读取：监听端口、鉴权 token、数据库地址、MQTT 消费端参数。
-// 工时与 AI 用量的数据来源走环境变量，见 README.md。
 package main
 
 import (
 	"context"
-	"crypto/tls"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -30,9 +20,7 @@ import (
 	"text/template"
 	"time"
 
-	mqtt "github.com/eclipse/paho.mqtt.golang"
 	_ "github.com/go-sql-driver/mysql"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"gopkg.in/yaml.v3"
 )
 
@@ -46,69 +34,41 @@ const (
 
 type Config struct {
 	Server struct {
-		Listen    string   `yaml:"listen"`
-		Token     string   `yaml:"token"`
-		Tokens    []string `yaml:"tokens"`
-		AllowCIDR []string `yaml:"allow_cidrs"`
-	} `yaml:"server"`
+		Listen    string   `yaml:"listen" json:"listen"`
+		Token     string   `yaml:"token" json:"token"`
+		Tokens    []string `yaml:"tokens" json:"tokens"`
+		AllowCIDR []string `yaml:"allow_cidrs" json:"allow_cidrs"`
+	} `yaml:"server" json:"server"`
 	Worktime struct {
 		// 直接从公司 PingCode 的 MySQL 取工时；SQL 放在镜像里的模板文件，方便你自己替换
-		ExpectedDailyHours float64 `yaml:"expected_daily_hours"`
-		StaticToken        string  `yaml:"token"`
+		ExpectedDailyHours float64 `yaml:"expected_daily_hours" json:"expected_daily_hours"`
+		StaticToken        string  `yaml:"token" json:"token"`
 		MySQL              struct {
-			DSN        string `yaml:"dsn"`
-			EmployeeNo string `yaml:"employee_no"`
-			QueryFile  string `yaml:"query_file"`
-			Query      string `yaml:"query"`
-			TimeoutSec int    `yaml:"timeout_sec"`
-		} `yaml:"mysql"`
-	} `yaml:"worktime"`
-	Database struct {
-		DSN           string `yaml:"dsn"`
-		MaxConns      int32  `yaml:"max_conns"`
-		MinConns      int32  `yaml:"min_conns"`
-		RetentionDays int    `yaml:"retention_days"`
-	} `yaml:"database"`
-	MQTT struct {
-		Enabled         bool   `yaml:"enabled"`
-		Broker          string `yaml:"broker"`
-		Username        string `yaml:"username"`
-		Password        string `yaml:"password"`
-		ClientID        string `yaml:"client_id"`
-		Topic           string `yaml:"topic"`
-		QoS             byte   `yaml:"qos"`
-		TLS             bool   `yaml:"tls"`
-		QueueSize       int    `yaml:"queue_size"`
-		BatchSize       int    `yaml:"batch_size"`
-		FlushIntervalMS int    `yaml:"flush_interval_ms"`
-	} `yaml:"mqtt"`
+			DSN        string `yaml:"dsn" json:"dsn"`
+			EmployeeNo string `yaml:"employee_no" json:"employee_no"`
+			QueryFile  string `yaml:"query_file" json:"query_file"`
+			Query      string `yaml:"query" json:"query"`
+			TimeoutSec int    `yaml:"timeout_sec" json:"timeout_sec"`
+		} `yaml:"mysql" json:"mysql"`
+	} `yaml:"worktime" json:"worktime"`
 	Log struct {
-		Level  string `yaml:"level"`
-		Format string `yaml:"format"`
-	} `yaml:"log"`
+		Level  string `yaml:"level" json:"level"`
+		Format string `yaml:"format" json:"format"`
+	} `yaml:"log" json:"log"`
 }
 
 type App struct {
 	cfg        Config
+	settings   *sql.DB
+	restart    func()
 	client     *http.Client
-	db         *pgxpool.Pool // MQTT 消费端落库（Postgres）
-	worktimeDB *sql.DB       // 工时查询（公司 PingCode MySQL）
-	mqtt       mqtt.Client
-
-	ingest   chan mqttMessage
-	ingestWG sync.WaitGroup
+	worktimeDB *sql.DB // 工时查询（公司 PingCode MySQL）
 
 	aiMu      sync.Mutex
 	aiCached  []byte
 	aiCacheAt time.Time
 
 	cidrs []*net.IPNet
-}
-
-type mqttMessage struct {
-	topic string
-	body  []byte
-	at    time.Time
 }
 
 func loadConfig(path string) (Config, error) {
@@ -122,24 +82,6 @@ func loadConfig(path string) (Config, error) {
 	}
 	if cfg.Server.Listen == "" {
 		cfg.Server.Listen = ":8000"
-	}
-	if cfg.MQTT.ClientID == "" {
-		cfg.MQTT.ClientID = "deskwong-service"
-	}
-	if cfg.MQTT.Topic == "" {
-		cfg.MQTT.Topic = "deskwong/racebox/data"
-	}
-	if cfg.MQTT.QoS > 2 {
-		cfg.MQTT.QoS = 1
-	}
-	if cfg.MQTT.QueueSize <= 0 {
-		cfg.MQTT.QueueSize = 1024
-	}
-	if cfg.MQTT.BatchSize <= 0 {
-		cfg.MQTT.BatchSize = 64
-	}
-	if cfg.MQTT.FlushIntervalMS <= 0 {
-		cfg.MQTT.FlushIntervalMS = 500
 	}
 	return cfg, nil
 }
@@ -218,7 +160,7 @@ func (a *App) authorize(next http.HandlerFunc) http.HandlerFunc {
 		if got == "" {
 			got = r.Header.Get("X-Token")
 		}
-		if !a.tokenAllowed(got) {
+		if !a.tokenAllowed(got) && !(r.URL.Path == "/worktime/summary" && a.cfg.Worktime.StaticToken != "" && got == a.cfg.Worktime.StaticToken) {
 			jsonReply(w, http.StatusUnauthorized, map[string]any{"code": 1001, "message": "unauthorized"})
 			return
 		}
@@ -438,7 +380,7 @@ func (a *App) worktime(w http.ResponseWriter, r *http.Request) {
 	if a.worktimeDB == nil {
 		jsonReply(w, http.StatusNotImplemented, map[string]any{
 			"code":    2004,
-			"message": "工时数据源未配置：请在 conf/config.yml 的 worktime.mysql 里填 DSN/工号，或设置 DESKWONG_WORKTIME_UPSTREAM",
+			"message": "工时数据源未配置：请在服务后台 /admin 填写 MySQL DSN/工号，或设置 DESKWONG_WORKTIME_UPSTREAM",
 		})
 		return
 	}
@@ -637,162 +579,46 @@ func (a *App) aiUsage(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(body)
 }
 
-/* ---------- MQTT 消费端 ---------- */
-
-func (a *App) ensureSchema(ctx context.Context) error {
-	if a.db == nil {
-		return errors.New("database.dsn 未配置")
-	}
-	_, err := a.db.Exec(ctx, `CREATE TABLE IF NOT EXISTS racebox_messages (
-		id BIGSERIAL PRIMARY KEY, topic TEXT NOT NULL, payload JSONB NOT NULL, received_at TIMESTAMPTZ NOT NULL DEFAULT now()
-	)`)
-	if err != nil {
-		return err
-	}
-	_, err = a.db.Exec(ctx, `CREATE INDEX IF NOT EXISTS racebox_messages_received_at_idx ON racebox_messages(received_at DESC)`)
-	return err
-}
-
-func (a *App) flush(ctx context.Context, batch []mqttMessage) {
-	if len(batch) == 0 || a.db == nil {
-		return
-	}
-	const cols = 3
-	placeholders := make([]string, 0, len(batch))
-	args := make([]any, 0, len(batch)*cols)
-	for i, m := range batch {
-		base := i * cols
-		placeholders = append(placeholders, fmt.Sprintf("($%d,$%d,$%d)", base+1, base+2, base+3))
-		args = append(args, m.topic, string(m.body), m.at)
-	}
-	q := "INSERT INTO racebox_messages(topic,payload,received_at) VALUES " + strings.Join(placeholders, ",")
-	if _, err := a.db.Exec(ctx, q, args...); err != nil {
-		slog.Error("mqtt batch insert failed", "count", len(batch), "error", err)
-	}
-}
-
-// 单 worker 串行批量落库：paho 回调只做入队，避免阻塞 MQTT 事件循环
-func (a *App) ingestLoop(ctx context.Context) {
-	defer a.ingestWG.Done()
-	size := a.cfg.MQTT.BatchSize
-	interval := time.Duration(a.cfg.MQTT.FlushIntervalMS) * time.Millisecond
-	if interval <= 0 {
-		interval = 500 * time.Millisecond
-	}
-	batch := make([]mqttMessage, 0, size)
-	timer := time.NewTimer(interval)
-	defer timer.Stop()
-	for {
-		select {
-		case m, ok := <-a.ingest:
-			if !ok {
-				a.flush(context.Background(), batch)
-				return
-			}
-			batch = append(batch, m)
-			if len(batch) >= size {
-				a.flush(ctx, batch)
-				batch = batch[:0]
-				if !timer.Stop() {
-					select {
-					case <-timer.C:
-					default:
-					}
-				}
-				timer.Reset(interval)
-			}
-		case <-timer.C:
-			a.flush(ctx, batch)
-			batch = batch[:0]
-			timer.Reset(interval)
-		case <-ctx.Done():
-			a.flush(context.Background(), batch)
-			return
-		}
-	}
-}
-
-func (a *App) retentionLoop(ctx context.Context) {
-	defer a.ingestWG.Done()
-	days := a.cfg.Database.RetentionDays
-	if days <= 0 || a.db == nil {
-		return
-	}
-	ticker := time.NewTicker(6 * time.Hour)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			res, err := a.db.Exec(ctx,
-				"DELETE FROM racebox_messages WHERE received_at < now() - ($1 || ' days')::interval",
-				strconv.Itoa(days))
-			if err != nil {
-				slog.Warn("retention cleanup failed", "error", err)
-				continue
-			}
-			slog.Info("retention cleanup", "days", days, "deleted", res.RowsAffected())
-		case <-ctx.Done():
-			return
-		}
-	}
-}
-
-func (a *App) startMQTT(ctx context.Context) error {
-	if !a.cfg.MQTT.Enabled {
-		return nil
-	}
-	if err := a.ensureSchema(ctx); err != nil {
-		return err
-	}
-	opts := mqtt.NewClientOptions().AddBroker(a.cfg.MQTT.Broker).SetClientID(a.cfg.MQTT.ClientID)
-	opts.SetUsername(a.cfg.MQTT.Username).SetPassword(a.cfg.MQTT.Password).SetAutoReconnect(true)
-	opts.SetOnConnectHandler(func(_ mqtt.Client) {
-		slog.Info("mqtt connected", "broker", a.cfg.MQTT.Broker)
-	})
-	opts.SetConnectionLostHandler(func(_ mqtt.Client, err error) {
-		slog.Warn("mqtt connection lost", "error", err)
-	})
-	if a.cfg.MQTT.TLS {
-		opts.SetTLSConfig(&tls.Config{MinVersion: tls.VersionTLS12})
-	}
-	a.mqtt = mqtt.NewClient(opts)
-	if token := a.mqtt.Connect(); token.Wait() && token.Error() != nil {
-		return token.Error()
-	}
-	token := a.mqtt.Subscribe(a.cfg.MQTT.Topic, a.cfg.MQTT.QoS, func(_ mqtt.Client, msg mqtt.Message) {
-		payload := msg.Payload()
-		if !json.Valid(payload) {
-			slog.Warn("discarded non-json mqtt message", "topic", msg.Topic())
-			return
-		}
-		body := make([]byte, len(payload))
-		copy(body, payload)
-		select {
-		case a.ingest <- mqttMessage{topic: msg.Topic(), body: body, at: time.Now()}:
-		default:
-			slog.Warn("ingest queue full, message dropped", "topic", msg.Topic())
-		}
-	})
-	token.Wait()
-	return token.Error()
-}
-
 func main() {
 	path := os.Getenv("DESKWONG_CONFIG")
 	if path == "" {
 		path = "/app/conf/config.yml"
 	}
-	cfg, err := loadConfig(path)
+	seed, err := loadConfig(path)
 	if err != nil {
-		slog.Error("load config", "path", path, "error", err)
+		slog.Error("load config", "error", err)
 		os.Exit(1)
 	}
-	setupLogger(cfg)
-
+	dbPath := os.Getenv("DESKWONG_SETTINGS_DB")
+	if dbPath == "" {
+		dbPath = "/app/data/settings.sqlite"
+	}
+	store, err := openSettings(dbPath, seed)
+	if err != nil {
+		slog.Error("open settings", "error", err)
+		os.Exit(1)
+	}
+	defer store.Close()
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+	for ctx.Err() == nil {
+		cfg, err := readSettings(store)
+		if err != nil {
+			slog.Error("read settings", "error", err)
+			return
+		}
+		setupLogger(cfg)
+		if err := runService(ctx, cfg, store); err != nil {
+			slog.Error("service", "error", err)
+			return
+		}
+	}
+}
 
-	app := &App{cfg: cfg, client: &http.Client{Timeout: 12 * time.Second}}
+func runService(parent context.Context, cfg Config, store *sql.DB) error {
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+	app := &App{cfg: cfg, settings: store, restart: cancel, client: &http.Client{Timeout: 12 * time.Second}}
 	for _, s := range cfg.Server.AllowCIDR {
 		if _, n, err := net.ParseCIDR(s); err == nil {
 			app.cidrs = append(app.cidrs, n)
@@ -804,72 +630,20 @@ func main() {
 		wdb, err := sql.Open("mysql", cfg.Worktime.MySQL.DSN)
 		if err != nil {
 			slog.Error("worktime mysql", "error", err)
-			os.Exit(1)
+			return err
 		}
 		wdb.SetMaxOpenConns(4)
 		wdb.SetMaxIdleConns(1)
 		wdb.SetConnMaxLifetime(30 * time.Minute)
-		if err := wdb.PingContext(ctx); err != nil {
-			slog.Error("worktime mysql ping", "error", err)
-		}
 		app.worktimeDB = wdb
 		defer wdb.Close()
 		slog.Info("worktime mysql configured", "employee", cfg.Worktime.MySQL.EmployeeNo)
 	}
-	if cfg.Database.DSN != "" {
-		poolCfg, err := pgxpool.ParseConfig(cfg.Database.DSN)
-		if err != nil {
-			slog.Error("database config", "error", err)
-			os.Exit(1)
-		}
-		if cfg.Database.MaxConns > 0 {
-			poolCfg.MaxConns = cfg.Database.MaxConns
-		}
-		if cfg.Database.MinConns > 0 {
-			poolCfg.MinConns = cfg.Database.MinConns
-		}
-		app.db, err = pgxpool.NewWithConfig(ctx, poolCfg)
-		if err != nil {
-			slog.Error("database", "error", err)
-			os.Exit(1)
-		}
-		defer app.db.Close()
-	}
-	if cfg.MQTT.Enabled {
-		app.ingest = make(chan mqttMessage, cfg.MQTT.QueueSize)
-		app.ingestWG.Add(2)
-		go app.ingestLoop(ctx)
-		go app.retentionLoop(ctx)
-	}
-	if err := app.startMQTT(ctx); err != nil {
-		slog.Error("mqtt", "error", err)
-		os.Exit(1)
-	}
-	if app.mqtt != nil {
-		defer func() {
-			app.mqtt.Disconnect(500)
-			close(app.ingest)
-			app.ingestWG.Wait()
-		}()
-	}
 
 	mux := http.NewServeMux()
+	app.registerAdmin(mux)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		status := map[string]any{"status": "ok", "version": version}
-		if app.db != nil {
-			status["database"] = "configured"
-			if err := app.db.Ping(r.Context()); err != nil {
-				status["database"] = "error"
-				status["status"] = "degraded"
-			}
-		} else {
-			status["database"] = "disabled"
-		}
-		if app.mqtt != nil {
-			status["mqtt"] = map[string]any{"connected": app.mqtt.IsConnected(), "topic": cfg.MQTT.Topic}
-		} else {
-			status["mqtt"] = "disabled"
-		}
 		jsonReply(w, 200, status)
 	})
 	mux.HandleFunc("GET /worktime/summary", app.authorize(app.worktime))
@@ -885,6 +659,7 @@ func main() {
 	slog.Info("deskwong service started", "listen", cfg.Server.Listen, "version", version)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		slog.Error("http server", "error", err)
-		os.Exit(1)
+		return err
 	}
+	return nil
 }

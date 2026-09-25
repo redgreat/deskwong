@@ -1,5 +1,6 @@
 #include "lvgl.h"
 #include "main_screen.h"
+#include "sync_screen.h"
 #include "calendar_service.h"
 #include "ui_fonts.h"
 #include <stdio.h>
@@ -37,7 +38,7 @@ int main(int argc,char **argv) {
     }
     main_screen_init(400,300);
     int month=argc>2?atoi(argv[2]):9;
-    bool empty=argc>3;
+    bool empty=argc>3 && strcmp(argv[3], "empty") == 0;
     char date[16]; snprintf(date,sizeof(date),"2026-%02d-11",month);
     lunar_date_t today; calendar_solar_to_lunar(2026,month,11,&today);
     char lunar[32]; calendar_lunar_str(&today,lunar,sizeof(lunar));
@@ -59,7 +60,13 @@ int main(int argc,char **argv) {
     five.remaining_percent = 72; weekly.remaining_percent = 44;
     struct tm reset = {}; reset.tm_year=126; reset.tm_mon=8; reset.tm_mday=12; reset.tm_hour=18; reset.tm_min=30;
     five.resets_at = mktime(&reset); reset.tm_mday=18; weekly.resets_at=mktime(&reset);
-    main_screen_update_summary(empty?0:64,empty?0:72,empty?NULL:"晴\n26C / 58%",lunar,empty?NULL:&five,empty?NULL:&weekly,!empty,empty?0:12800,empty?NAN:24.0f,empty?NAN:52.0f);
+    main_screen_update_summary(empty?0:64,empty?0:72,empty?NULL:"晴\n26C / 58%",empty?0:argc>4?atoi(argv[4]):100,lunar,empty?NULL:&five,empty?NULL:&weekly,!empty,empty?0:12800,empty?NAN:24.0f,empty?NAN:52.0f);
+    sync_screen_init(400,300);
+    if (argc>3 && strcmp(argv[3],"sync")==0) {
+        racebox_progress_t p={};p.state=RACEBOX_FAILED;p.received=750;p.total=753;p.download_done=true;p.percent=0;p.elapsed_seconds=23;
+        strcpy(p.device,"RaceBox Mini S 2254300997");strcpy(p.message,"下载完成，MQTT 未连接");
+        sync_screen_update(&p);sync_screen_show();
+    }
     save(argc>1?argv[1]:"preview.pgm");
     lv_mem_monitor_t m; lv_mem_monitor(&m);
     printf("UI heap used: %u / %u bytes\n",(unsigned)(m.total_size-m.free_size),(unsigned)m.total_size);

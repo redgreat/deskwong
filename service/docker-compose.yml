@@ -11,9 +11,12 @@ services:
       - "8001:8001"
     volumes:
       - ../conf:/app/conf:ro
-      - ../log:/app/log
+      - deskwong-settings:/app/data
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
+
+volumes:
+  deskwong-settings:

@@ -8,7 +8,7 @@
 #include <time.h>
 
 static lv_obj_t *s_time, *s_year, *s_month, *s_total, *s_status, *s_race_check, *s_points;
-static lv_obj_t *s_lunar_full, *s_weather, *s_temperature, *s_humidity, *s_sun, *s_cloud, *s_bell, *s_ai[2], *s_remind;
+static lv_obj_t *s_lunar_full, *s_weather, *s_temperature, *s_humidity, *s_weather_image, *s_bell, *s_ai[2], *s_remind;
 static lv_obj_t *s_cell[42], *s_day[42], *s_lunar[42], *s_track[42], *s_fill[42];
 static lv_obj_t *s_summary_fill, *s_ai_fill[2];
 /* 状态栏：离线时显示的后台地址胶囊、RaceBox 图标 */
@@ -32,6 +32,27 @@ static const lv_img_dsc_t s_chatgpt_img = {
     .header = {.cf = LV_IMG_CF_ALPHA_1BIT, .always_zero = 0, .reserved = 0, .w = 24, .h = 24},
     .data_size = sizeof(s_chatgpt_alpha), .data = s_chatgpt_alpha
 };
+
+#include "weather_icons.inc"
+static lv_img_dsc_t s_weather_img = {
+    .header = {.cf = LV_IMG_CF_ALPHA_1BIT, .always_zero = 0, .reserved = 0, .w = 32, .h = 32},
+    .data_size = 32 * 32 / 8, .data = nullptr
+};
+static bool set_weather_icon(int code) {
+    for (const auto &icon : weather_icons) {
+        if (icon.code == code) {
+            if (s_weather_img.data != icon.data) {
+                s_weather_img.data = icon.data;
+                lv_img_set_src(s_weather_image, &s_weather_img);
+                lv_obj_invalidate(s_weather_image);
+            }
+            lv_obj_clear_flag(s_weather_image, LV_OBJ_FLAG_HIDDEN);
+            return true;
+        }
+    }
+    lv_obj_add_flag(s_weather_image, LV_OBJ_FLAG_HIDDEN);
+    return false;
+}
 
 static void text_changed(lv_obj_t *o, const char *v) {
     if (o && v && strcmp(lv_label_get_text(o), v)) lv_label_set_text(o, v);
@@ -123,39 +144,6 @@ static lv_obj_t *degree_mark(lv_obj_t *p, int size, int border) {
     return o;
 }
 
-static void draw_sun(lv_event_t *e) {
-    lv_area_t a; lv_obj_get_coords(lv_event_get_target(e), &a);
-    lv_draw_ctx_t *ctx = lv_event_get_draw_ctx(e);
-    lv_draw_rect_dsc_t circle; lv_draw_rect_dsc_init(&circle);
-    circle.bg_opa = LV_OPA_TRANSP; circle.border_width = 2;
-    circle.border_color = lv_color_black(); circle.radius = LV_RADIUS_CIRCLE;
-    lv_area_t ring = {(lv_coord_t)(a.x1+7), (lv_coord_t)(a.y1+7), (lv_coord_t)(a.x1+23), (lv_coord_t)(a.y1+23)};
-    lv_draw_rect(ctx, &circle, &ring);
-    static const int rays[8][4] = {{15,0,15,3},{15,27,15,30},{0,15,3,15},{27,15,30,15},
-        {4,4,6,6},{24,24,26,26},{4,26,6,24},{24,6,26,4}};
-    lv_draw_line_dsc_t line; lv_draw_line_dsc_init(&line); line.width=2; line.color=lv_color_black();
-    for (const auto &r : rays) {
-        lv_point_t p={(lv_coord_t)(a.x1+r[0]),(lv_coord_t)(a.y1+r[1])};
-        lv_point_t q={(lv_coord_t)(a.x1+r[2]),(lv_coord_t)(a.y1+r[3])};
-        lv_draw_line(ctx,&line,&p,&q);
-    }
-}
-
-static void draw_cloud(lv_event_t *e) {
-    lv_area_t a; lv_obj_get_coords(lv_event_get_target(e), &a);
-    lv_draw_ctx_t *ctx = lv_event_get_draw_ctx(e);
-    static const int outline[][2] = {
-        {4,22},{3,20},{3,17},{5,14},{8,13},{10,9},{13,7},{17,7},
-        {20,9},{21,12},{25,12},{28,15},{28,19},{26,22},{4,22}
-    };
-    lv_draw_line_dsc_t line; lv_draw_line_dsc_init(&line);
-    line.width = 2; line.color = lv_color_black(); line.round_start = 1; line.round_end = 1;
-    for (size_t i = 1; i < sizeof(outline) / sizeof(outline[0]); ++i) {
-        lv_point_t p = {(lv_coord_t)(a.x1 + outline[i-1][0]), (lv_coord_t)(a.y1 + outline[i-1][1])};
-        lv_point_t q = {(lv_coord_t)(a.x1 + outline[i][0]), (lv_coord_t)(a.y1 + outline[i][1])};
-        lv_draw_line(ctx, &line, &p, &q);
-    }
-}
 void main_screen_init(int width, int height) {
     lv_obj_t *scr = lv_scr_act();
     lv_obj_set_style_bg_color(scr, lv_color_white(), 0);
@@ -225,12 +213,12 @@ void main_screen_init(int width, int height) {
     lv_obj_set_style_text_color(t, lv_color_white(), 0);
     s_lunar_full = label(scr, "--", &lv_font_zh_20, 315, 66, 81);
     box(scr, 315, 94, 80, 1, true);
-    s_sun = box(scr, 315, 102, 31, 31);
-    lv_obj_add_event_cb(s_sun, draw_sun, LV_EVENT_DRAW_MAIN, NULL);
-    lv_obj_add_flag(s_sun, LV_OBJ_FLAG_HIDDEN);
-    s_cloud = box(scr, 315, 102, 31, 31);
-    lv_obj_add_event_cb(s_cloud, draw_cloud, LV_EVENT_DRAW_MAIN, NULL);
-    lv_obj_add_flag(s_cloud, LV_OBJ_FLAG_HIDDEN);
+    s_weather_image = lv_img_create(scr);
+    lv_img_set_src(s_weather_image, &s_weather_img);
+    lv_obj_set_pos(s_weather_image, 315, 102);
+    lv_obj_set_style_img_recolor(s_weather_image, lv_color_black(), 0);
+    lv_obj_set_style_img_recolor_opa(s_weather_image, LV_OPA_COVER, 0);
+    lv_obj_add_flag(s_weather_image, LV_OBJ_FLAG_HIDDEN);
     s_weather = label(scr, "天气 --", &lv_font_zh_14, 315, 110, 80);
     s_temperature = label(scr, "--", &lv_font_digits_28, 315, 135);
     s_degree_out = degree_mark(scr, 10, 2);
@@ -303,7 +291,7 @@ void main_screen_update_calendar(const calendar_cell_t cells[42]) {
         else lv_obj_clear_flag(s_track[i], LV_OBJ_FLAG_HIDDEN);
     }
 }
-void main_screen_update_summary(float recorded, float expected, const char *weather, const char *lunar,
+void main_screen_update_summary(float recorded, float expected, const char *weather, int weather_icon, const char *lunar,
                                 const ai_provider_t *ai5h, const ai_provider_t *aiweek, bool synced, int points,
                                 float indoor_temp, float indoor_humidity) {
     char b[96];
@@ -320,13 +308,8 @@ void main_screen_update_summary(float recorded, float expected, const char *weat
     const char *newline = weather ? strchr(weather, '\n') : NULL;
     int temperature = 0, humidity = 0;
     bool valid_weather = newline && sscanf(newline+1, "%dC / %d%%", &temperature, &humidity) == 2;
-    bool sunny = valid_weather && strncmp(weather, "晴", strlen("晴")) == 0;
-    bool cloudy = valid_weather && (strstr(weather, "阴") != NULL || strstr(weather, "云") != NULL);
-    if (sunny) lv_obj_clear_flag(s_sun, LV_OBJ_FLAG_HIDDEN);
-    else lv_obj_add_flag(s_sun, LV_OBJ_FLAG_HIDDEN);
-    if (cloudy) lv_obj_clear_flag(s_cloud, LV_OBJ_FLAG_HIDDEN);
-    else lv_obj_add_flag(s_cloud, LV_OBJ_FLAG_HIDDEN);
-    bool has_icon = sunny || cloudy;
+    bool has_icon = valid_weather && set_weather_icon(weather_icon);
+    if (!valid_weather) lv_obj_add_flag(s_weather_image, LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_x(s_weather, has_icon ? 350 : 315); lv_obj_set_width(s_weather, has_icon ? 45 : 80);
     if (valid_weather) snprintf(b, sizeof(b), "%.*s", (int)(newline-weather), weather);
     else snprintf(b, sizeof(b), "%s", weather && *weather ? weather : "天气 --");

@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -38,6 +39,9 @@ typedef struct {
     int total;          // 总条数，0 表示未知
     int received;       // 已接收 / 已上传条数
     int percent;        // 0..100，<0 表示进度不确定
+    int uploaded;       // MQTT PUBACK-confirmed records
+    int elapsed_seconds;// 本次同步从按键触发起的总用时
+    bool download_done;
     char device[64];    // 已连接设备名
     char message[64];   // 一句话状态
 } racebox_progress_t;
@@ -55,10 +59,11 @@ racebox_state_t racebox_service_state(void);
 void racebox_service_progress(racebox_progress_t *out);
 int racebox_service_point_count(void);
 bool racebox_service_synced_today(void);
+void racebox_service_day_tick(int year, int month, int day);
 
-/* 上传一批记录到 MQTT（deskwong/racebox/data，QoS 1）；成功返回 0 */
-int racebox_publish_records(const racebox_record_t *recs, int count,
-                            const char *imp_stamp, const char *file_name);
+/* 上传 RBX1 二进制批次到 MQTT（QoS 1）；成功返回 0。 */
+int racebox_publish_raw_batch(const uint8_t *records, int offset, int count,
+                              const uint8_t import_id[16]);
 
 #ifdef __cplusplus
 }

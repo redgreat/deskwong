@@ -45,6 +45,7 @@ static char s_name_lock[64] = "";
 static char s_peer_name[64] = "";
 static uint16_t s_nus_start = 0;
 static uint16_t s_nus_end = 0;
+static uint32_t s_notify_count = 0;
 
 void racebox_ble_peer_name(char *out, size_t len) {
     if (!out || len == 0) return;
@@ -197,8 +198,9 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
                 if (s_disc_cb) s_disc_cb(s_peer_name);
                 s_scanning = false;
                 ble_gap_disc_cancel();
-                ble_gap_connect(BLE_OWN_ADDR_PUBLIC, &event->disc.addr, 30000, NULL,
-                                gap_event, NULL);
+                int connect_rc = ble_gap_connect(BLE_OWN_ADDR_PUBLIC, &event->disc.addr,
+                                                 30000, NULL, gap_event, NULL);
+                if (connect_rc != 0) ESP_LOGE(TAG, "connect start failed rc=%d", connect_rc);
             }
         }
         return 0;
@@ -230,7 +232,8 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
         }
         return 0;
     case BLE_GAP_EVENT_DISCONNECT:
-        ESP_LOGI(TAG, "disconnected");
+        ESP_LOGI(TAG, "disconnected reason=%d notifications=%lu", event->disconnect.reason,
+                 (unsigned long)s_notify_count);
         s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
         s_link_connected = false;
         s_rx_chr = s_tx_chr = 0;
@@ -253,6 +256,9 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
             copied += n;
             om = om->om_next.sle_next;
         }
+        s_notify_count++;
+        if (s_notify_count == 1 || s_notify_count % 1000 == 0)
+            ESP_LOGI(TAG, "notifications=%lu latest_bytes=%d", (unsigned long)s_notify_count, copied);
         if (s_rx_cb) s_rx_cb(buf, copied);
         return 0;
     }
@@ -292,6 +298,7 @@ void racebox_ble_start(void) {
         return;
     }
     s_restart_after_disconnect = false;
+    s_notify_count = 0;
     s_scanning = true;
     struct ble_gap_disc_params dp = {0};
     dp.filter_duplicates = 1;

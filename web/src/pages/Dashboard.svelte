@@ -17,7 +17,7 @@
     mqtt_broker: '', mqtt_port: 1883, mqtt_user: '', mqtt_pass: '',
     racebox_upload_topic: 'deskwong/racebox/data', racebox_device_name: 'RaceBox',
     racebox_device_lock: '',
-    racebox_auto_erase: true,
+    racebox_auto_erase: false,
     remind_signin_hh: 8, remind_signin_mm: 25,
     remind_signout_hh: 17, remind_signout_mm: 35,
     remind_worktime_hh: 17, remind_worktime_mm: 0,
@@ -56,7 +56,7 @@
     try {
       await api.saveConfig(cfg)
       saved = true
-      setTimeout(() => (saved = false), 2500)
+      // Keep the restart reminder visible until the next edit/save.
     } catch (e) {
       error = e.message
     }
@@ -166,6 +166,7 @@
     <section>
       <h2>工时（PingCode）</h2>
       <label>API 地址<input bind:value={cfg.worktime_api_base} placeholder="http://host/worktime" /></label>
+      <p class="muted">工时 MySQL、工号和 SQL 在工时服务地址的 /admin 页面配置，保存到 SQLite，重启服务生效。</p>
       <label>Token<input bind:value={cfg.worktime_token} placeholder="留空不修改" /></label>
       <label>工时记录刷新频率（分钟）<input type="number" bind:value={cfg.worktime_refresh_minutes} min="5" max="1440" /></label>
     </section>
@@ -185,7 +186,11 @@
 
     <section>
       <h2>RaceBox（MQTT）</h2>
-      <label>Broker 地址<input bind:value={cfg.mqtt_broker} /></label>
+      {#if health?.mqtt_message}
+        <p class="muted">设备状态：{health.mqtt_message}</p>
+      {/if}
+      <label>Broker 地址<input bind:value={cfg.mqtt_broker} placeholder="例如 mqtt.example.com 或 mqtts://mqtt.example.com:8883" /></label>
+      <p class="muted">保存时设备会实际连接 Broker 并校验地址、端口和账号密码；校验失败不会覆盖原配置。保存成功后重启设备生效。</p>
       <label>端口<input type="number" bind:value={cfg.mqtt_port} /></label>
       <label>用户名<input bind:value={cfg.mqtt_user} /></label>
       <label>密码<input type="password" bind:value={cfg.mqtt_pass} placeholder="留空不修改" /></label>
@@ -195,7 +200,7 @@
       <div class="setting-row">
         <div>
           <strong>上传后清除内存</strong>
-          <span>轨迹确认上传成功后，自动清除 RaceBox 内存</span>
+          <span>默认关闭；测试期间保留设备数据，可重复下载</span>
         </div>
         <label class="switch" aria-label="上传成功后清除 RaceBox 内存">
           <input type="checkbox" bind:checked={cfg.racebox_auto_erase} />
@@ -270,7 +275,7 @@
 
     <div class="actions">
       <button class="button primary" type="submit" disabled={loading}>{loading ? '保存中...' : '保存配置'}</button>
-      {#if saved}<span class="ok">已保存</span>{/if}
+      {#if saved}<span class="ok">已保存到设备 Flash，断电不丢失；重启设备后生效</span>{/if}
     </div>
   </form>
 
