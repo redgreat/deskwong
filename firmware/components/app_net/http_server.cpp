@@ -18,6 +18,7 @@
 #include "aiusage_service.h"
 #include "net_scheduler.h"
 #include "racebox_service.h"
+#include "app_mqtt.h"
 
 static const char *TAG = "httpd";
 static app_config_t *s_cfg = NULL;
@@ -73,6 +74,8 @@ static esp_err_t health_handler(httpd_req_t *req) {
     cJSON_AddBoolToObject(d, "wifi_connected", wifi_is_connected());
     cJSON_AddBoolToObject(d, "ap_mode", wifi_is_ap_mode());
     cJSON_AddStringToObject(d, "ip", ip);
+    cJSON_AddNumberToObject(d, "mqtt_status", app_mqtt_status());
+    cJSON_AddStringToObject(d, "mqtt_message", app_mqtt_status_text());
     const esp_app_desc_t *app = esp_app_get_description();
     const esp_partition_t *running = esp_ota_get_running_partition();
     cJSON_AddStringToObject(d, "firmware_version", app->version);
@@ -115,48 +118,50 @@ static esp_err_t login_handler(httpd_req_t *req) {
 
 static esp_err_t config_get_handler(httpd_req_t *req) {
     if (!authed(req)) return send_err(req, 401, "unauthorized");
+    app_config_t stored = *s_cfg;
+    app_config_load(&stored);
     cJSON *d = cJSON_CreateObject();
-    cJSON_AddStringToObject(d, "wifi_ssid", s_cfg->wifi_ssid);
+    cJSON_AddStringToObject(d, "wifi_ssid", stored.wifi_ssid);
     cJSON_AddStringToObject(d, "wifi_pass", "******");   // 脱敏
-    cJSON_AddStringToObject(d, "timezone", s_cfg->timezone);
-    cJSON_AddStringToObject(d, "admin_user", s_cfg->admin_user);
+    cJSON_AddStringToObject(d, "timezone", stored.timezone);
+    cJSON_AddStringToObject(d, "admin_user", stored.admin_user);
     cJSON_AddStringToObject(d, "admin_pass", "******");
-    cJSON_AddStringToObject(d, "weather_location", s_cfg->weather_location);
-    cJSON_AddStringToObject(d, "weather_api_url", s_cfg->weather_api_url);
-    cJSON_AddStringToObject(d, "weather_key", s_cfg->weather_key[0] ? "******" : "");
-    cJSON_AddNumberToObject(d, "weather_refresh_minutes", s_cfg->weather_refresh_minutes);
-    cJSON_AddStringToObject(d, "worktime_api_base", s_cfg->worktime_api_base);
-    cJSON_AddStringToObject(d, "worktime_token", s_cfg->worktime_token[0] ? "******" : "");
-    cJSON_AddNumberToObject(d, "worktime_refresh_minutes", s_cfg->worktime_refresh_minutes);
-    cJSON_AddStringToObject(d, "aiusage_api_base", s_cfg->aiusage_api_base);
-    cJSON_AddStringToObject(d, "aiusage_token", s_cfg->aiusage_token[0] ? "******" : "");
-    cJSON_AddNumberToObject(d, "aiusage_refresh_minutes", s_cfg->aiusage_refresh_minutes);
-    cJSON_AddStringToObject(d, "mqtt_broker", s_cfg->mqtt_broker);
-    cJSON_AddNumberToObject(d, "mqtt_port", s_cfg->mqtt_port);
-    cJSON_AddStringToObject(d, "mqtt_user", s_cfg->mqtt_user);
-    cJSON_AddStringToObject(d, "mqtt_pass", s_cfg->mqtt_pass[0] ? "******" : "");
-    cJSON_AddStringToObject(d, "racebox_upload_topic", s_cfg->racebox_upload_topic);
-    cJSON_AddStringToObject(d, "racebox_device_name", s_cfg->racebox_device_name);
-    cJSON_AddStringToObject(d, "racebox_device_lock", s_cfg->racebox_device_lock);
-    cJSON_AddBoolToObject(d, "racebox_auto_erase", s_cfg->racebox_auto_erase);
-    cJSON_AddNumberToObject(d, "remind_signin_hh", s_cfg->remind_signin_hh);
-    cJSON_AddNumberToObject(d, "remind_signin_mm", s_cfg->remind_signin_mm);
-    cJSON_AddNumberToObject(d, "remind_signout_hh", s_cfg->remind_signout_hh);
-    cJSON_AddNumberToObject(d, "remind_signout_mm", s_cfg->remind_signout_mm);
-    cJSON_AddNumberToObject(d, "remind_worktime_hh", s_cfg->remind_worktime_hh);
-    cJSON_AddNumberToObject(d, "remind_worktime_mm", s_cfg->remind_worktime_mm);
-    cJSON_AddBoolToObject(d, "remind_enabled", s_cfg->remind_enabled);
-    cJSON_AddBoolToObject(d, "voice_enabled", s_cfg->voice_enabled);
-    cJSON_AddStringToObject(d, "voice_wake_word", s_cfg->voice_wake_word);
-    cJSON_AddStringToObject(d, "voice_server_url", s_cfg->voice_server_url);
-    cJSON_AddStringToObject(d, "voice_token", s_cfg->voice_token[0] ? "******" : "");
-    cJSON_AddStringToObject(d, "voice_device_id", s_cfg->voice_device_id);
-    cJSON_AddNumberToObject(d, "voice_volume", s_cfg->voice_volume);
-    cJSON_AddNumberToObject(d, "voice_listen_mode", s_cfg->voice_listen_mode);
-    cJSON_AddNumberToObject(d, "voice_aec_level", s_cfg->voice_aec_level);
-    cJSON_AddNumberToObject(d, "voice_reply_seconds", s_cfg->voice_reply_seconds);
-    cJSON_AddBoolToObject(d, "voice_tts_scroll", s_cfg->voice_tts_scroll);
-    cJSON_AddBoolToObject(d, "voice_mcp_enabled", s_cfg->voice_mcp_enabled);
+    cJSON_AddStringToObject(d, "weather_location", stored.weather_location);
+    cJSON_AddStringToObject(d, "weather_api_url", stored.weather_api_url);
+    cJSON_AddStringToObject(d, "weather_key", stored.weather_key[0] ? "******" : "");
+    cJSON_AddNumberToObject(d, "weather_refresh_minutes", stored.weather_refresh_minutes);
+    cJSON_AddStringToObject(d, "worktime_api_base", stored.worktime_api_base);
+    cJSON_AddStringToObject(d, "worktime_token", stored.worktime_token[0] ? "******" : "");
+    cJSON_AddNumberToObject(d, "worktime_refresh_minutes", stored.worktime_refresh_minutes);
+    cJSON_AddStringToObject(d, "aiusage_api_base", stored.aiusage_api_base);
+    cJSON_AddStringToObject(d, "aiusage_token", stored.aiusage_token[0] ? "******" : "");
+    cJSON_AddNumberToObject(d, "aiusage_refresh_minutes", stored.aiusage_refresh_minutes);
+    cJSON_AddStringToObject(d, "mqtt_broker", stored.mqtt_broker);
+    cJSON_AddNumberToObject(d, "mqtt_port", stored.mqtt_port);
+    cJSON_AddStringToObject(d, "mqtt_user", stored.mqtt_user);
+    cJSON_AddStringToObject(d, "mqtt_pass", stored.mqtt_pass[0] ? "******" : "");
+    cJSON_AddStringToObject(d, "racebox_upload_topic", stored.racebox_upload_topic);
+    cJSON_AddStringToObject(d, "racebox_device_name", stored.racebox_device_name);
+    cJSON_AddStringToObject(d, "racebox_device_lock", stored.racebox_device_lock);
+    cJSON_AddBoolToObject(d, "racebox_auto_erase", stored.racebox_auto_erase);
+    cJSON_AddNumberToObject(d, "remind_signin_hh", stored.remind_signin_hh);
+    cJSON_AddNumberToObject(d, "remind_signin_mm", stored.remind_signin_mm);
+    cJSON_AddNumberToObject(d, "remind_signout_hh", stored.remind_signout_hh);
+    cJSON_AddNumberToObject(d, "remind_signout_mm", stored.remind_signout_mm);
+    cJSON_AddNumberToObject(d, "remind_worktime_hh", stored.remind_worktime_hh);
+    cJSON_AddNumberToObject(d, "remind_worktime_mm", stored.remind_worktime_mm);
+    cJSON_AddBoolToObject(d, "remind_enabled", stored.remind_enabled);
+    cJSON_AddBoolToObject(d, "voice_enabled", stored.voice_enabled);
+    cJSON_AddStringToObject(d, "voice_wake_word", stored.voice_wake_word);
+    cJSON_AddStringToObject(d, "voice_server_url", stored.voice_server_url);
+    cJSON_AddStringToObject(d, "voice_token", stored.voice_token[0] ? "******" : "");
+    cJSON_AddStringToObject(d, "voice_device_id", stored.voice_device_id);
+    cJSON_AddNumberToObject(d, "voice_volume", stored.voice_volume);
+    cJSON_AddNumberToObject(d, "voice_listen_mode", stored.voice_listen_mode);
+    cJSON_AddNumberToObject(d, "voice_aec_level", stored.voice_aec_level);
+    cJSON_AddNumberToObject(d, "voice_reply_seconds", stored.voice_reply_seconds);
+    cJSON_AddBoolToObject(d, "voice_tts_scroll", stored.voice_tts_scroll);
+    cJSON_AddBoolToObject(d, "voice_mcp_enabled", stored.voice_mcp_enabled);
 
     cJSON *o = cJSON_CreateObject();
     cJSON_AddNumberToObject(o, "code", 0);
@@ -176,137 +181,145 @@ static void set_str_field(cJSON *j, const char *key, char *dst, size_t len) {
 
 static esp_err_t config_put_handler(httpd_req_t *req) {
     if (!authed(req)) return send_err(req, 401, "unauthorized");
-    char *body = (char *)calloc(1, 2048);
+    app_config_t pending = *s_cfg;
+    app_config_load(&pending);
+    if (req->content_len <= 0 || req->content_len > 8192) return send_err(req, 400, "invalid config size");
+    char *body = (char *)calloc(1, req->content_len + 1);
     if (!body) return send_err(req, 500, "out of memory");
-    int rlen = httpd_req_recv(req, body, 2047);
-    if (rlen <= 0) {
-        free(body);
-        return send_err(req, 400, "bad request");
+    int received = 0;
+    while (received < req->content_len) {
+        int n = httpd_req_recv(req, body + received, req->content_len - received);
+        if (n <= 0) { free(body); return send_err(req, 400, "incomplete config"); }
+        received += n;
     }
-    body[rlen] = 0;
     cJSON *j = cJSON_Parse(body);
     free(body);
     if (!j) return send_err(req, 400, "bad json");
 
     /* 仅更新传入的字段；"******" 视为未修改 */
     cJSON *it;
-    set_str_field(j, "wifi_ssid", s_cfg->wifi_ssid, sizeof(s_cfg->wifi_ssid));
+    set_str_field(j, "wifi_ssid", pending.wifi_ssid, sizeof(pending.wifi_ssid));
     it = cJSON_GetObjectItem(j, "wifi_pass");
     if (it && cJSON_IsString(it) && it->valuestring[0] && strcmp(it->valuestring, "******") != 0) {
-        strncpy(s_cfg->wifi_pass, it->valuestring, sizeof(s_cfg->wifi_pass) - 1);
-        s_cfg->wifi_pass[sizeof(s_cfg->wifi_pass) - 1] = 0;
+        strncpy(pending.wifi_pass, it->valuestring, sizeof(pending.wifi_pass) - 1);
+        pending.wifi_pass[sizeof(pending.wifi_pass) - 1] = 0;
     }
-    set_str_field(j, "timezone", s_cfg->timezone, sizeof(s_cfg->timezone));
-    set_str_field(j, "admin_user", s_cfg->admin_user, sizeof(s_cfg->admin_user));
+    set_str_field(j, "timezone", pending.timezone, sizeof(pending.timezone));
+    set_str_field(j, "admin_user", pending.admin_user, sizeof(pending.admin_user));
     it = cJSON_GetObjectItem(j, "admin_pass");
     if (it && cJSON_IsString(it) && it->valuestring[0] && strcmp(it->valuestring, "******") != 0) {
-        strncpy(s_cfg->admin_pass, it->valuestring, sizeof(s_cfg->admin_pass) - 1);
-        s_cfg->admin_pass[sizeof(s_cfg->admin_pass) - 1] = 0;
+        strncpy(pending.admin_pass, it->valuestring, sizeof(pending.admin_pass) - 1);
+        pending.admin_pass[sizeof(pending.admin_pass) - 1] = 0;
     }
-    set_str_field(j, "weather_location", s_cfg->weather_location, sizeof(s_cfg->weather_location));
-    set_str_field(j, "weather_api_url", s_cfg->weather_api_url, sizeof(s_cfg->weather_api_url));
+    set_str_field(j, "weather_location", pending.weather_location, sizeof(pending.weather_location));
+    set_str_field(j, "weather_api_url", pending.weather_api_url, sizeof(pending.weather_api_url));
     it = cJSON_GetObjectItem(j, "weather_key");
     if (it && cJSON_IsString(it) && it->valuestring[0] && strcmp(it->valuestring, "******") != 0) {
-        strncpy(s_cfg->weather_key, it->valuestring, sizeof(s_cfg->weather_key) - 1);
-        s_cfg->weather_key[sizeof(s_cfg->weather_key) - 1] = 0;
+        strncpy(pending.weather_key, it->valuestring, sizeof(pending.weather_key) - 1);
+        pending.weather_key[sizeof(pending.weather_key) - 1] = 0;
     }
     it = cJSON_GetObjectItem(j, "weather_refresh_minutes");
     if (it && cJSON_IsNumber(it)) {
         int minutes = it->valueint;
         if (minutes < 5) minutes = 5;
         if (minutes > 1440) minutes = 1440;
-        s_cfg->weather_refresh_minutes = (uint16_t)minutes;
+        pending.weather_refresh_minutes = (uint16_t)minutes;
     }
-    set_str_field(j, "worktime_api_base", s_cfg->worktime_api_base, sizeof(s_cfg->worktime_api_base));
+    set_str_field(j, "worktime_api_base", pending.worktime_api_base, sizeof(pending.worktime_api_base));
     it = cJSON_GetObjectItem(j, "worktime_token");
     if (it && cJSON_IsString(it) && it->valuestring[0] && strcmp(it->valuestring, "******") != 0) {
-        strncpy(s_cfg->worktime_token, it->valuestring, sizeof(s_cfg->worktime_token) - 1);
-        s_cfg->worktime_token[sizeof(s_cfg->worktime_token) - 1] = 0;
+        strncpy(pending.worktime_token, it->valuestring, sizeof(pending.worktime_token) - 1);
+        pending.worktime_token[sizeof(pending.worktime_token) - 1] = 0;
     }
     it = cJSON_GetObjectItem(j, "worktime_refresh_minutes");
     if (it && cJSON_IsNumber(it)) {
         int minutes = it->valueint;
         if (minutes < 5) minutes = 5;
         if (minutes > 1440) minutes = 1440;
-        s_cfg->worktime_refresh_minutes = (uint16_t)minutes;
+        pending.worktime_refresh_minutes = (uint16_t)minutes;
     }
-    set_str_field(j, "aiusage_api_base", s_cfg->aiusage_api_base, sizeof(s_cfg->aiusage_api_base));
+    set_str_field(j, "aiusage_api_base", pending.aiusage_api_base, sizeof(pending.aiusage_api_base));
     it = cJSON_GetObjectItem(j, "aiusage_token");
     if (it && cJSON_IsString(it) && it->valuestring[0] && strcmp(it->valuestring, "******") != 0) {
-        strncpy(s_cfg->aiusage_token, it->valuestring, sizeof(s_cfg->aiusage_token) - 1);
-        s_cfg->aiusage_token[sizeof(s_cfg->aiusage_token) - 1] = 0;
+        strncpy(pending.aiusage_token, it->valuestring, sizeof(pending.aiusage_token) - 1);
+        pending.aiusage_token[sizeof(pending.aiusage_token) - 1] = 0;
     }
     it = cJSON_GetObjectItem(j, "aiusage_refresh_minutes");
     if (it && cJSON_IsNumber(it)) {
         int minutes = it->valueint;
         if (minutes < 1) minutes = 1;
         if (minutes > 1440) minutes = 1440;
-        s_cfg->aiusage_refresh_minutes = (uint16_t)minutes;
+        pending.aiusage_refresh_minutes = (uint16_t)minutes;
     }
-    set_str_field(j, "mqtt_broker", s_cfg->mqtt_broker, sizeof(s_cfg->mqtt_broker));
-    set_str_field(j, "racebox_upload_topic", s_cfg->racebox_upload_topic, sizeof(s_cfg->racebox_upload_topic));
-    set_str_field(j, "racebox_device_name", s_cfg->racebox_device_name, sizeof(s_cfg->racebox_device_name));
-    set_str_field(j, "racebox_device_lock", s_cfg->racebox_device_lock, sizeof(s_cfg->racebox_device_lock));
+    set_str_field(j, "mqtt_broker", pending.mqtt_broker, sizeof(pending.mqtt_broker));
+    set_str_field(j, "racebox_upload_topic", pending.racebox_upload_topic, sizeof(pending.racebox_upload_topic));
+    set_str_field(j, "racebox_device_name", pending.racebox_device_name, sizeof(pending.racebox_device_name));
+    set_str_field(j, "racebox_device_lock", pending.racebox_device_lock, sizeof(pending.racebox_device_lock));
     it = cJSON_GetObjectItem(j, "racebox_auto_erase");
-    if (it && cJSON_IsBool(it)) s_cfg->racebox_auto_erase = cJSON_IsTrue(it);
-    set_str_field(j, "mqtt_user", s_cfg->mqtt_user, sizeof(s_cfg->mqtt_user));
+    if (it && cJSON_IsBool(it)) pending.racebox_auto_erase = cJSON_IsTrue(it);
+    set_str_field(j, "mqtt_user", pending.mqtt_user, sizeof(pending.mqtt_user));
     it = cJSON_GetObjectItem(j, "mqtt_pass");
     if (it && cJSON_IsString(it) && it->valuestring[0] && strcmp(it->valuestring, "******") != 0) {
-        strncpy(s_cfg->mqtt_pass, it->valuestring, sizeof(s_cfg->mqtt_pass) - 1);
-        s_cfg->mqtt_pass[sizeof(s_cfg->mqtt_pass) - 1] = 0;
+        strncpy(pending.mqtt_pass, it->valuestring, sizeof(pending.mqtt_pass) - 1);
+        pending.mqtt_pass[sizeof(pending.mqtt_pass) - 1] = 0;
     }
     it = cJSON_GetObjectItem(j, "mqtt_port");
-    if (it && cJSON_IsNumber(it)) s_cfg->mqtt_port = (uint16_t)it->valueint;
+    if (it && cJSON_IsNumber(it)) {
+        if (it->valueint < 1 || it->valueint > 65535) {
+            cJSON_Delete(j);
+            return send_err(req, 400, "MQTT 端口必须在 1 到 65535 之间");
+        }
+        pending.mqtt_port = (uint16_t)it->valueint;
+    }
     it = cJSON_GetObjectItem(j, "remind_signin_hh");
-    if (it && cJSON_IsNumber(it)) s_cfg->remind_signin_hh = (uint8_t)it->valueint;
+    if (it && cJSON_IsNumber(it)) pending.remind_signin_hh = (uint8_t)it->valueint;
     it = cJSON_GetObjectItem(j, "remind_signin_mm");
-    if (it && cJSON_IsNumber(it)) s_cfg->remind_signin_mm = (uint8_t)it->valueint;
+    if (it && cJSON_IsNumber(it)) pending.remind_signin_mm = (uint8_t)it->valueint;
     it = cJSON_GetObjectItem(j, "remind_signout_hh");
-    if (it && cJSON_IsNumber(it)) s_cfg->remind_signout_hh = (uint8_t)it->valueint;
+    if (it && cJSON_IsNumber(it)) pending.remind_signout_hh = (uint8_t)it->valueint;
     it = cJSON_GetObjectItem(j, "remind_signout_mm");
-    if (it && cJSON_IsNumber(it)) s_cfg->remind_signout_mm = (uint8_t)it->valueint;
+    if (it && cJSON_IsNumber(it)) pending.remind_signout_mm = (uint8_t)it->valueint;
     it = cJSON_GetObjectItem(j, "remind_worktime_hh");
-    if (it && cJSON_IsNumber(it)) s_cfg->remind_worktime_hh = (uint8_t)it->valueint;
+    if (it && cJSON_IsNumber(it)) pending.remind_worktime_hh = (uint8_t)it->valueint;
     it = cJSON_GetObjectItem(j, "remind_worktime_mm");
-    if (it && cJSON_IsNumber(it)) s_cfg->remind_worktime_mm = (uint8_t)it->valueint;
+    if (it && cJSON_IsNumber(it)) pending.remind_worktime_mm = (uint8_t)it->valueint;
     it = cJSON_GetObjectItem(j, "remind_enabled");
-    if (it && cJSON_IsBool(it)) s_cfg->remind_enabled = cJSON_IsTrue(it);
+    if (it && cJSON_IsBool(it)) pending.remind_enabled = cJSON_IsTrue(it);
     it = cJSON_GetObjectItem(j, "voice_enabled");
-    if (it && cJSON_IsBool(it)) s_cfg->voice_enabled = cJSON_IsTrue(it);
-    set_str_field(j, "voice_wake_word", s_cfg->voice_wake_word, sizeof(s_cfg->voice_wake_word));
-    set_str_field(j, "voice_server_url", s_cfg->voice_server_url, sizeof(s_cfg->voice_server_url));
+    if (it && cJSON_IsBool(it)) pending.voice_enabled = cJSON_IsTrue(it);
+    set_str_field(j, "voice_wake_word", pending.voice_wake_word, sizeof(pending.voice_wake_word));
+    set_str_field(j, "voice_server_url", pending.voice_server_url, sizeof(pending.voice_server_url));
     it = cJSON_GetObjectItem(j, "voice_token");
     if (it && cJSON_IsString(it) && it->valuestring[0] && strcmp(it->valuestring, "******") != 0) {
-        strncpy(s_cfg->voice_token, it->valuestring, sizeof(s_cfg->voice_token) - 1);
-        s_cfg->voice_token[sizeof(s_cfg->voice_token) - 1] = 0;
+        strncpy(pending.voice_token, it->valuestring, sizeof(pending.voice_token) - 1);
+        pending.voice_token[sizeof(pending.voice_token) - 1] = 0;
     }
-    set_str_field(j, "voice_device_id", s_cfg->voice_device_id, sizeof(s_cfg->voice_device_id));
+    set_str_field(j, "voice_device_id", pending.voice_device_id, sizeof(pending.voice_device_id));
     it = cJSON_GetObjectItem(j, "voice_volume");
-    if (it && cJSON_IsNumber(it)) s_cfg->voice_volume = (uint8_t)(it->valueint > 100 ? 100 : (it->valueint < 0 ? 0 : it->valueint));
+    if (it && cJSON_IsNumber(it)) pending.voice_volume = (uint8_t)(it->valueint > 100 ? 100 : (it->valueint < 0 ? 0 : it->valueint));
     it = cJSON_GetObjectItem(j, "voice_listen_mode");
-    if (it && cJSON_IsNumber(it)) s_cfg->voice_listen_mode = (uint8_t)(it->valueint > 2 ? 2 : it->valueint);
+    if (it && cJSON_IsNumber(it)) pending.voice_listen_mode = (uint8_t)(it->valueint > 2 ? 2 : it->valueint);
     it = cJSON_GetObjectItem(j, "voice_aec_level");
-    if (it && cJSON_IsNumber(it)) s_cfg->voice_aec_level = (uint8_t)(it->valueint > 3 ? 3 : it->valueint);
+    if (it && cJSON_IsNumber(it)) pending.voice_aec_level = (uint8_t)(it->valueint > 3 ? 3 : it->valueint);
     it = cJSON_GetObjectItem(j, "voice_reply_seconds");
-    if (it && cJSON_IsNumber(it)) s_cfg->voice_reply_seconds = (uint8_t)(it->valueint > 120 ? 120 : it->valueint);
+    if (it && cJSON_IsNumber(it)) pending.voice_reply_seconds = (uint8_t)(it->valueint > 120 ? 120 : it->valueint);
     it = cJSON_GetObjectItem(j, "voice_tts_scroll");
-    if (it && cJSON_IsBool(it)) s_cfg->voice_tts_scroll = cJSON_IsTrue(it);
+    if (it && cJSON_IsBool(it)) pending.voice_tts_scroll = cJSON_IsTrue(it);
     it = cJSON_GetObjectItem(j, "voice_mcp_enabled");
-    if (it && cJSON_IsBool(it)) s_cfg->voice_mcp_enabled = cJSON_IsTrue(it);
+    if (it && cJSON_IsBool(it)) pending.voice_mcp_enabled = cJSON_IsTrue(it);
 
+    char mqtt_check[96];
+    if (app_mqtt_test_config(pending.mqtt_broker, pending.mqtt_port,
+                             pending.mqtt_user, pending.mqtt_pass,
+                             10000, mqtt_check, sizeof(mqtt_check)) != 0) {
+        cJSON_Delete(j);
+        return send_err(req, 400, mqtt_check);
+    }
     cJSON_Delete(j);
-    app_config_save(s_cfg);
-
-    /* 热生效：不需要重启即可应用的新配置 */
-    weather_service_init(s_cfg->weather_api_url, s_cfg->weather_location, s_cfg->weather_key);
-    worktime_service_init(s_cfg->worktime_api_base, s_cfg->worktime_token);
-    aiusage_service_init(s_cfg->aiusage_api_base, s_cfg->aiusage_token);
-    racebox_service_reconfigure(s_cfg->racebox_upload_topic, s_cfg->racebox_auto_erase,
-                                s_cfg->racebox_device_name, s_cfg->racebox_device_lock);
-    net_scheduler_set_period(NET_JOB_WEATHER, (uint32_t)s_cfg->weather_refresh_minutes * 60U);
-    net_scheduler_set_period(NET_JOB_WORKTIME, (uint32_t)s_cfg->worktime_refresh_minutes * 60U);
-    net_scheduler_set_period(NET_JOB_AIUSAGE, (uint32_t)s_cfg->aiusage_refresh_minutes * 60U);
-    return send_err(req, 0, "ok");
+    if (app_config_save(&pending) != ESP_OK) return send_err(req, 500, "配置保存失败");
+    return send_err(req, 0, pending.mqtt_broker[0]
+                              ? "MQTT 校验成功，已保存到设备 Flash，重启后生效"
+                              : "MQTT 已关闭，配置已保存到设备 Flash，重启后生效");
 }
 
 static esp_err_t restart_handler(httpd_req_t *req) {

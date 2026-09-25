@@ -8,11 +8,12 @@ static const char *TAG = "cfg";
 #define NVS_NS "deskwong"
 
 /* 配置结构版本号：新增出厂默认值时 +1，老设备升级后自动补齐一次 */
-#define CFG_VERSION 2
+#define CFG_VERSION 3
 
 /* 一次性迁移：老设备 NVS 里已有空值会盖掉出厂默认值，这里把关键字段补回来 */
 static void migrate(app_config_t *cfg, uint8_t stored_ver) {
     if (stored_ver >= CFG_VERSION) return;
+    cfg->racebox_auto_erase = false;
     if (cfg->weather_api_url[0] == 0)
         strcpy(cfg->weather_api_url, "https://nc2tujbtc3.re.qweatherapi.com/v7/weather/now");
     if (cfg->weather_key[0] == 0)
@@ -51,7 +52,7 @@ void app_config_defaults(app_config_t *cfg) {
     strcpy(cfg->racebox_upload_topic, "deskwong/racebox/data");
     strcpy(cfg->racebox_device_name, "RaceBox");
     strcpy(cfg->racebox_device_lock, "");
-    cfg->racebox_auto_erase = true;
+    cfg->racebox_auto_erase = false;
     cfg->remind_signin_hh = 8;
     cfg->remind_signin_mm = 25;
     cfg->remind_signout_hh = 17;
@@ -163,6 +164,7 @@ esp_err_t app_config_load(app_config_t *cfg) {
         nvs_handle_t w;
         if (nvs_open(NVS_NS, NVS_READWRITE, &w) == ESP_OK) {
             nvs_set_u8(w, "cfg_ver", CFG_VERSION);
+            nvs_set_u8(w, "rb_erase", 0);
             nvs_set_str(w, "weather_loc", cfg->weather_location);
             nvs_set_str(w, "weather_url", cfg->weather_api_url);
             nvs_set_str(w, "weather_key", cfg->weather_key);
@@ -178,48 +180,48 @@ esp_err_t app_config_save(const app_config_t *cfg) {
     nvs_handle_t h;
     esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
     if (err != ESP_OK) return err;
-    nvs_set_str(h, "wifi_ssid", cfg->wifi_ssid);
-    nvs_set_str(h, "wifi_pass", cfg->wifi_pass);
-    nvs_set_str(h, "timezone", cfg->timezone);
-    nvs_set_str(h, "admin_user", cfg->admin_user);
-    nvs_set_str(h, "admin_pass", cfg->admin_pass);
-    nvs_set_str(h, "weather_loc", cfg->weather_location);
-    nvs_set_str(h, "weather_url", cfg->weather_api_url);
-    nvs_set_str(h, "weather_key", cfg->weather_key);
-    nvs_set_u16(h, "weather_freq", cfg->weather_refresh_minutes);
-    nvs_set_str(h, "wt_base", cfg->worktime_api_base);
-    nvs_set_str(h, "wt_token", cfg->worktime_token);
-    nvs_set_u16(h, "wt_freq", cfg->worktime_refresh_minutes);
-    nvs_set_str(h, "ai_base", cfg->aiusage_api_base);
-    nvs_set_str(h, "ai_token", cfg->aiusage_token);
-    nvs_set_u16(h, "ai_freq", cfg->aiusage_refresh_minutes);
-    nvs_set_str(h, "mqtt_broker", cfg->mqtt_broker);
-    nvs_set_str(h, "mqtt_user", cfg->mqtt_user);
-    nvs_set_str(h, "mqtt_pass", cfg->mqtt_pass);
-    nvs_set_str(h, "rb_topic", cfg->racebox_upload_topic);
-    nvs_set_str(h, "rb_device", cfg->racebox_device_name);
-    nvs_set_str(h, "rb_lock", cfg->racebox_device_lock);
-    nvs_set_u8(h, "rb_erase", cfg->racebox_auto_erase ? 1 : 0);
-    nvs_set_u16(h, "mqtt_port", cfg->mqtt_port);
-    nvs_set_u8(h, "rem_si_hh", cfg->remind_signin_hh);
-    nvs_set_u8(h, "rem_si_mm", cfg->remind_signin_mm);
-    nvs_set_u8(h, "rem_so_hh", cfg->remind_signout_hh);
-    nvs_set_u8(h, "rem_so_mm", cfg->remind_signout_mm);
-    nvs_set_u8(h, "rem_wt_hh", cfg->remind_worktime_hh);
-    nvs_set_u8(h, "rem_wt_mm", cfg->remind_worktime_mm);
-    nvs_set_u8(h, "rem_en", cfg->remind_enabled ? 1 : 0);
-    nvs_set_u8(h, "vo_en", cfg->voice_enabled ? 1 : 0);
-    nvs_set_str(h, "vo_word", cfg->voice_wake_word);
-    nvs_set_str(h, "vo_url", cfg->voice_server_url);
-    nvs_set_str(h, "vo_token", cfg->voice_token);
-    nvs_set_str(h, "vo_devid", cfg->voice_device_id);
-    nvs_set_u8(h, "vo_vol", cfg->voice_volume);
-    nvs_set_u8(h, "vo_mode", cfg->voice_listen_mode);
-    nvs_set_u8(h, "vo_aec", cfg->voice_aec_level);
-    nvs_set_u8(h, "vo_secs", cfg->voice_reply_seconds);
-    nvs_set_u8(h, "vo_scroll", cfg->voice_tts_scroll ? 1 : 0);
-    nvs_set_u8(h, "vo_mcp", cfg->voice_mcp_enabled ? 1 : 0);
-    nvs_set_u8(h, "cfg_ver", CFG_VERSION);
+    if ((err = nvs_set_str(h, "wifi_ssid", cfg->wifi_ssid)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_str(h, "wifi_pass", cfg->wifi_pass)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_str(h, "timezone", cfg->timezone)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_str(h, "admin_user", cfg->admin_user)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_str(h, "admin_pass", cfg->admin_pass)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_str(h, "weather_loc", cfg->weather_location)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_str(h, "weather_url", cfg->weather_api_url)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_str(h, "weather_key", cfg->weather_key)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_u16(h, "weather_freq", cfg->weather_refresh_minutes)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_str(h, "wt_base", cfg->worktime_api_base)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_str(h, "wt_token", cfg->worktime_token)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_u16(h, "wt_freq", cfg->worktime_refresh_minutes)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_str(h, "ai_base", cfg->aiusage_api_base)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_str(h, "ai_token", cfg->aiusage_token)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_u16(h, "ai_freq", cfg->aiusage_refresh_minutes)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_str(h, "mqtt_broker", cfg->mqtt_broker)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_str(h, "mqtt_user", cfg->mqtt_user)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_str(h, "mqtt_pass", cfg->mqtt_pass)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_str(h, "rb_topic", cfg->racebox_upload_topic)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_str(h, "rb_device", cfg->racebox_device_name)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_str(h, "rb_lock", cfg->racebox_device_lock)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_u8(h, "rb_erase", cfg->racebox_auto_erase ? 1 : 0)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_u16(h, "mqtt_port", cfg->mqtt_port)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_u8(h, "rem_si_hh", cfg->remind_signin_hh)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_u8(h, "rem_si_mm", cfg->remind_signin_mm)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_u8(h, "rem_so_hh", cfg->remind_signout_hh)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_u8(h, "rem_so_mm", cfg->remind_signout_mm)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_u8(h, "rem_wt_hh", cfg->remind_worktime_hh)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_u8(h, "rem_wt_mm", cfg->remind_worktime_mm)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_u8(h, "rem_en", cfg->remind_enabled ? 1 : 0)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_u8(h, "vo_en", cfg->voice_enabled ? 1 : 0)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_str(h, "vo_word", cfg->voice_wake_word)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_str(h, "vo_url", cfg->voice_server_url)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_str(h, "vo_token", cfg->voice_token)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_str(h, "vo_devid", cfg->voice_device_id)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_u8(h, "vo_vol", cfg->voice_volume)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_u8(h, "vo_mode", cfg->voice_listen_mode)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_u8(h, "vo_aec", cfg->voice_aec_level)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_u8(h, "vo_secs", cfg->voice_reply_seconds)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_u8(h, "vo_scroll", cfg->voice_tts_scroll ? 1 : 0)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_u8(h, "vo_mcp", cfg->voice_mcp_enabled ? 1 : 0)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_u8(h, "cfg_ver", CFG_VERSION)) != ESP_OK) { nvs_close(h); return err; }
     err = nvs_commit(h);
     nvs_close(h);
     ESP_LOGI(TAG, "config saved");

@@ -41,13 +41,16 @@
 ### 2.3 数据字段（对应 `lc_racebox` 表）
 `itow, year, month, day, hour, minute, second, time_accuracy, nanoseconds, fix_status, numberof_svs, longitude, latitude, wgs_altitude, msl_altitude, horizontal_accuracy, vertical_accuracy, speed, heading, speed_accuracy, heading_accuracy, pdop, gforce_x, gforce_y, gforce_z, rotation_rate_x, rotation_rate_y, rotation_rate_z`
 
-### 2.4 MQTT 上传契约（D5，已定稿）
+### 2.4 MQTT 上传契约（RBX1）
 - 连接参数（配置后台设置）：`Broker 地址、端口、Client ID、用户名、口令、TLS 开关、Topic 前缀`。
 - 主题设计（默认前缀 `deskwong/`，可配置）：
   - 数据：`deskwong/racebox/data`（QoS 1）
   - 状态：`deskwong/racebox/status`（QoS 0）
-- 数据消息 payload（JSON，一次导入一批记录）：
+- 数据消息使用 `RBX1` 二进制格式：固定 96 字节头部加最多 48 条原始记录，
+  完整字段、CRC、幂等键和 Python 消费示例见
+  [`doc/racebox-mqtt-binary.md`](../racebox-mqtt-binary.md)。旧 JSON payload 已停用。
 
+<!-- 历史 JSON 示例，仅供字段名称参考，不再由固件发布。
 ```jsonc
 {
   "device_id": "deskwong-01",
@@ -74,6 +77,7 @@
   ]
 }
 ```
+-->
 
 - 状态消息 payload（JSON）：
 

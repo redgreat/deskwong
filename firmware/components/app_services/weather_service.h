@@ -11,6 +11,7 @@ typedef struct {
     int temp;
     int humidity;
     int wind_scale;
+    int icon;  // QWeather icon code; 0 when weather is unavailable
 } weather_now_t;
 
 void weather_service_init(const char *api_url, const char *location, const char *key);

@@ -5,7 +5,7 @@ set(ROOT "${CMAKE_CURRENT_LIST_DIR}/../..")
 set(LV_CONF_PATH "${CMAKE_CURRENT_LIST_DIR}/lv_conf.h" CACHE STRING "" FORCE)
 add_subdirectory("${ROOT}/firmware/managed_components/lvgl__lvgl" lvgl)
 file(GLOB UI_FONTS "${ROOT}/firmware/components/app_ui/font_*.c")
-add_executable(ui_preview preview.cpp "${ROOT}/firmware/components/app_ui/main_screen.cpp"
+add_executable(ui_preview preview.cpp "${ROOT}/firmware/components/app_ui/sync_screen.cpp" "${ROOT}/firmware/components/app_ui/main_screen.cpp"
     "${ROOT}/firmware/components/app_services/calendar_service.c" ${UI_FONTS})
 target_include_directories(ui_preview PRIVATE "${ROOT}/firmware/components/app_ui" "${ROOT}/firmware/components/app_services")
 target_link_libraries(ui_preview PRIVATE lvgl)

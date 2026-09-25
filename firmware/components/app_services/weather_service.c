@@ -121,6 +121,33 @@ static const char *wmo_text(int code) {
     }
 }
 
+/* Open-Meteo WMO code -> closest QWeather weather icon. */
+static int wmo_icon(int code) {
+    switch (code) {
+    case 0: return 100;
+    case 1: return 102;
+    case 2: return 103;
+    case 3: return 104;
+    case 45: return 500;
+    case 48: return 501;
+    case 51: case 53: case 55: return 309;
+    case 56: case 57: case 66: case 67: return 313;
+    case 61: return 305;
+    case 63: return 306;
+    case 65: return 307;
+    case 71: return 400;
+    case 73: return 401;
+    case 75: return 402;
+    case 77: return 407;
+    case 80: return 300;
+    case 81: case 82: return 301;
+    case 85: case 86: return 407;
+    case 95: return 302;
+    case 96: case 99: return 304;
+    default: return 999;
+    }
+}
+
 void weather_service_init(const char *api_url, const char *location, const char *key) {
     if (api_url && api_url[0]) {
         strncpy(s_api_url, api_url, sizeof(s_api_url) - 1);
@@ -162,6 +189,7 @@ static int fetch_open_meteo(weather_now_t *out) {
     cJSON *tmp = cJSON_GetObjectItem(cur, "temperature_2m");
     cJSON *hum = cJSON_GetObjectItem(cur, "relative_humidity_2m");
     cJSON *code = cJSON_GetObjectItem(cur, "weather_code");
+    out->icon = code && cJSON_IsNumber(code) ? wmo_icon(code->valueint) : 999;
     snprintf(out->text, sizeof(out->text), "%s", code ? wmo_text((int)(code->valuedouble)) : "--");
     out->temp = tmp ? (int)(tmp->valuedouble + 0.5) : 0;
     out->humidity = hum ? (int)(hum->valuedouble + 0.5) : 0;
@@ -187,6 +215,8 @@ static int fetch_qweather(weather_now_t *out) {
     cJSON *tmp = cJSON_GetObjectItem(now, "temp");
     cJSON *hum = cJSON_GetObjectItem(now, "humidity");
     cJSON *ws = cJSON_GetObjectItem(now, "windScale");
+    cJSON *icon = cJSON_GetObjectItem(now, "icon");
+    out->icon = icon && cJSON_IsString(icon) ? atoi(icon->valuestring) : 999;
     if (t && cJSON_IsString(t)) strncpy(out->text, t->valuestring, sizeof(out->text) - 1);
     else strcpy(out->text, "--");
     out->text[sizeof(out->text) - 1] = 0;
@@ -204,6 +234,7 @@ int weather_service_fetch(weather_now_t *out) {
     out->temp = 0;
     out->humidity = 0;
     out->wind_scale = 0;
+    out->icon = 0;
     /* 没填 Key 就走免密钥的 Open-Meteo；填了 Key 走和风天气 */
     if (!s_key[0]) return fetch_open_meteo(out);
     if (!s_api_url[0]) return 1;

@@ -188,7 +188,6 @@ static void ui_update_task(void *arg) {
     calendar_cell_t cells[42];
     uint32_t tick = 0;
     int last_day = -1;
-    uint32_t sync_hold = 0;   /* 同步结束后的停留时间（单位：200ms） */
     racebox_state_t last_sync_state = RACEBOX_IDLE;
     while (1) {
         datetime_t dt;
@@ -206,21 +205,25 @@ static void ui_update_task(void *arg) {
                 Lvgl_unlock();
             }
         } else if (sync_terminal && prog.state != last_sync_state) {
-            sync_hold = 30;   /* 完成/取消后再停留约 6 秒 */
+            g_summary_dirty = true;
             if (Lvgl_lock(100)) {
                 sync_screen_update(&prog);
+                if (prog.state == RACEBOX_DONE) sync_screen_hide();
+                else sync_screen_show();
                 Lvgl_unlock();
             }
-        } else if (sync_hold > 0) {
-            sync_hold--;
-        } else if (Lvgl_lock(100)) {
-            if (sync_screen_visible()) sync_screen_hide();
-            Lvgl_unlock();
         }
         last_sync_state = prog.state;
 
         /* 每秒：提醒轮询 + 时间/状态刷新 */
         if (tick % 5 == 0) {
+            racebox_service_day_tick(dt.year, dt.month, dt.day);
+            static int last_points = -1;
+            static bool last_synced = false;
+            int points = racebox_service_point_count();
+            bool synced = racebox_service_synced_today();
+            if (points != last_points || synced != last_synced) g_summary_dirty = true;
+            last_points = points; last_synced = synced;
             reminder_service_tick(&dt);
 
             snprintf(time_str, sizeof(time_str), "%02d:%02d:%02d", dt.hour, dt.minute, dt.second);
@@ -278,7 +281,7 @@ static void ui_update_task(void *arg) {
                     if (g_ai[i].window_minutes == 10080) aiweek = &g_ai[i];
                 }
                 main_screen_update_summary(g_worktime.recorded_hours, g_worktime.expected_hours,
-                    weather, lunar_full, ai5h, aiweek,
+                    weather, g_weather.text[0] ? g_weather.icon : 0, lunar_full, ai5h, aiweek,
                     racebox_service_synced_today(), racebox_service_point_count(), g_temp, g_humi);
                 Lvgl_unlock();
             }
@@ -315,6 +318,9 @@ static void button_task(void *arg) {
                     Lvgl_unlock();
                 }
                 ESP_LOGI(TAG, "KEY click -> toggle sync panel");
+            } else if (sync_screen_visible()) {
+                if (Lvgl_lock(100)) { sync_screen_hide(); Lvgl_unlock(); }
+                ESP_LOGI(TAG, "KEY click -> dismiss sync summary");
             } else {
                 ESP_LOGI(TAG, "KEY click -> racebox trigger");
                 racebox_service_trigger();
@@ -351,7 +357,6 @@ extern "C" void app_main(void) {
                                g_cfg.remind_worktime_hh, g_cfg.remind_worktime_mm);
     reminder_service_set_enabled(g_cfg.remind_enabled);
 
-    app_mqtt_init(g_cfg.mqtt_broker, g_cfg.mqtt_port, g_cfg.mqtt_user, g_cfg.mqtt_pass, NULL);
     racebox_service_init(g_cfg.racebox_upload_topic, g_cfg.racebox_auto_erase,
                          g_cfg.racebox_device_name, g_cfg.racebox_device_lock);
     audio_service_init();
@@ -376,6 +381,9 @@ extern "C" void app_main(void) {
                            refresh_period(g_cfg.aiusage_refresh_minutes, 60));
 
     wifi_init(g_cfg.wifi_ssid, g_cfg.wifi_pass);
+    /* esp-mqtt resolves the broker immediately. Initialize it only after
+     * wifi_init has created the TCP/IP mailbox, even if WiFi is still joining. */
+    app_mqtt_init(g_cfg.mqtt_broker, g_cfg.mqtt_port, g_cfg.mqtt_user, g_cfg.mqtt_pass, NULL);
     http_server_start(&g_cfg);
     time_service_sync_ntp();
 

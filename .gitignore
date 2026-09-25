@@ -26,6 +26,7 @@
 
 # Fortran module files
 *.mod
+!service/go.mod
 *.smod
 
 # Compiled Static libraries
@@ -94,3 +95,6 @@ build_dist/
 # 本地服务配置与运行日志（仅提交 sample）
 conf/config.yml
 log/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

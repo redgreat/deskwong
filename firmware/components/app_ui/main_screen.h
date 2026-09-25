@@ -31,7 +31,7 @@ void main_screen_update_bottom(const char *info);
 void main_screen_update_status(const char *status);
 /* 联网状态：未联网时状态栏显示可访问的后台地址，并隐藏 RaceBox 图标腾出空间 */
 void main_screen_update_net(bool connected, const char *ip);
-void main_screen_update_summary(float recorded, float expected, const char *weather,
+void main_screen_update_summary(float recorded, float expected, const char *weather, int weather_icon,
                                 const char *lunar, const ai_provider_t *ai5h, const ai_provider_t *aiweek,
                                 bool racebox_synced, int racebox_points,
                                 float indoor_temp, float indoor_humidity);

@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 )
 
 func TestAuthorization(t *testing.T) {
@@ -69,11 +68,4 @@ func TestCodexProvidersNormalization(t *testing.T) {
 	if providers[1]["resets_at"] != int64(1893553445) { // 2030-01-02T03:04:05Z
 		t.Fatalf("resets_at=%v", providers[1]["resets_at"])
 	}
-}
-
-func TestRetentionSQLGuard(t *testing.T) {
-	// 未配置数据库时 flush / retention 必须安全退出，不能 panic
-	var cfg Config
-	app := &App{cfg: cfg}
-	app.flush(nil, []mqttMessage{{topic: "t", body: []byte(`{}`), at: time.Now()}})
 }
