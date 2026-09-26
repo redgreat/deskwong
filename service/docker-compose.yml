@@ -1,6 +1,6 @@
 services:
   deskwong-service:
-    image: ${DESKWONG_IMAGE:-registry.cn-hangzhou.aliyuncs.com/redgreat/deskwong-service:latest}
+    image: ${DESKWONG_IMAGE:-ghcr.io/redgreat/deskwong:latest}
     container_name: deskwong-service
     hostname: deskwong-service
     restart: unless-stopped
