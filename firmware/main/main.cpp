@@ -393,10 +393,11 @@ extern "C" void app_main(void) {
     BaseType_t button_ok = xTaskCreatePinnedToCoreWithCaps(
         button_task, "btn", 4 * 1024, NULL, 3, NULL, 1,
         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    /* 栈要给 TLS 握手 + gzip inflate(puff 约 2KB) 留足余量。 */
+    /* 栈要给 TLS 握手 + gzip inflate(puff 约 2KB) 留足余量。该任务不做
+     * flash/NVS 写入，放到 PSRAM 可释放 24KB 内部 RAM 给 WiFi、BLE 和 SPI DMA。 */
     BaseType_t network_ok = xTaskCreatePinnedToCoreWithCaps(
         network_service_task, "network_services", 24 * 1024, NULL, 2, NULL, 0,
-        MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (ui_ok != pdPASS || button_ok != pdPASS || network_ok != pdPASS) {
         ESP_LOGE(TAG, "task creation failed: ui=%ld button=%ld network=%ld",
                  (long)ui_ok, (long)button_ok, (long)network_ok);

@@ -166,7 +166,8 @@ static void handle_frame(const uint8_t *data, size_t len) {
             finish_success();
             s_state = RACEBOX_DONE;
             set_message("上传完成，设备数据已清理");
-            ESP_LOGI(TAG,"erase confirmed; daily points=%d",s_point_count);
+            ESP_LOGI(TAG,"erase confirmed; daily points=%d internal_free=%u",
+                     s_point_count,(unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
             racebox_ble_stop();
         } else if (data[3] == 0x03 && plen >= 2 && data[6] == 0xFF && data[7] == 0x24) {
             s_erase_pending = false;
@@ -309,6 +310,8 @@ static void upload_worker(void *arg) {
                  s_received,s_uploaded,(int)s_auto_erase);
         s_worker_active=false;
         app_mqtt_stop();
+        ESP_LOGI(TAG,"MQTT stopped; internal_free=%u",
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
         if (start_erase) {
             s_erase_pending=true;
             s_state=RACEBOX_SCANNING;
@@ -341,7 +344,8 @@ static void daily_save_worker(void *arg) {
             }
             if (saved && date == s_sync_day && points == s_point_count) {
                 s_save_daily = false;
-                ESP_LOGI(TAG, "daily state saved date=%d points=%d", date, points);
+                ESP_LOGI(TAG, "daily state saved date=%d points=%d stack_free=%u",
+                         date, points, (unsigned)uxTaskGetStackHighWaterMark(NULL));
             } else {
                 vTaskDelay(pdMS_TO_TICKS(1000));
             }
@@ -372,9 +376,11 @@ void racebox_service_init(const char *upload_topic, bool auto_erase,
     s_upload_tcb = heap_caps_calloc(1, sizeof(*s_upload_tcb), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     s_upload_stack = heap_caps_calloc(6144, sizeof(*s_upload_stack), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     s_daily_save_tcb = heap_caps_calloc(1, sizeof(*s_daily_save_tcb), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    s_daily_save_stack = heap_caps_calloc(2048, sizeof(*s_daily_save_stack), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    /* NVS commit traverses the flash/NVS layers while cache is disabled and
+     * needs substantially more than the original 8KB stack. */
+    s_daily_save_stack = heap_caps_calloc(4096, sizeof(*s_daily_save_stack), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (s_daily_save_tcb && s_daily_save_stack) {
-        s_daily_save_task = xTaskCreateStatic(daily_save_worker, "racebox_day", 2048, NULL, 2,
+        s_daily_save_task = xTaskCreateStatic(daily_save_worker, "racebox_day", 4096, NULL, 2,
                                                s_daily_save_stack, s_daily_save_tcb);
     }
     if (!s_daily_save_task) ESP_LOGE(TAG, "daily state task allocation failed");
