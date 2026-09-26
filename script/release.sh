@@ -17,4 +17,5 @@ git rev-parse -q --verify "refs/tags/$version" >/dev/null && { echo "标签 $ver
 
 git tag -a "$version" -m "Release $version"
 git push origin "$version"
-echo "已推送 $version，GitHub Actions 将测试、推送 GHCR/阿里云 ACR 镜像并创建 GitHub Release。"
+echo "已推送 $version，GitHub Actions 将测试、推送 GHCR 镜像并创建 GitHub Release。"
+echo "镜像地址：ghcr.io/redgreat/deskwong:${version#v} 与 :latest"
