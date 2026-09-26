@@ -35,8 +35,8 @@ static const lv_img_dsc_t s_chatgpt_img = {
 
 #include "weather_icons.inc"
 static lv_img_dsc_t s_weather_img = {
-    .header = {.cf = LV_IMG_CF_ALPHA_1BIT, .always_zero = 0, .reserved = 0, .w = 32, .h = 32},
-    .data_size = 32 * 32 / 8, .data = nullptr
+    .header = {.cf = LV_IMG_CF_ALPHA_1BIT, .always_zero = 0, .reserved = 0, .w = 28, .h = 28},
+    .data_size = ((28 + 7) / 8) * 28, .data = nullptr
 };
 static bool set_weather_icon(int code) {
     for (const auto &icon : weather_icons) {
@@ -215,11 +215,12 @@ void main_screen_init(int width, int height) {
     box(scr, 315, 94, 80, 1, true);
     s_weather_image = lv_img_create(scr);
     lv_img_set_src(s_weather_image, &s_weather_img);
-    lv_obj_set_pos(s_weather_image, 315, 102);
+    lv_obj_set_pos(s_weather_image, 317, 99);
     lv_obj_set_style_img_recolor(s_weather_image, lv_color_black(), 0);
     lv_obj_set_style_img_recolor_opa(s_weather_image, LV_OPA_COVER, 0);
     lv_obj_add_flag(s_weather_image, LV_OBJ_FLAG_HIDDEN);
-    s_weather = label(scr, "天气 --", &lv_font_zh_14, 315, 110, 80);
+    s_weather = label(scr, "天气 --", &lv_font_zh_20, 315, 102, 80);
+    lv_obj_set_style_text_align(s_weather, LV_TEXT_ALIGN_CENTER, 0);
     s_temperature = label(scr, "--", &lv_font_digits_28, 315, 135);
     s_degree_out = degree_mark(scr, 10, 2);
     /* The ring is a superscript: keep it level with the top of the large digits. */
@@ -310,7 +311,7 @@ void main_screen_update_summary(float recorded, float expected, const char *weat
     bool valid_weather = newline && sscanf(newline+1, "%dC / %d%%", &temperature, &humidity) == 2;
     bool has_icon = valid_weather && set_weather_icon(weather_icon);
     if (!valid_weather) lv_obj_add_flag(s_weather_image, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_set_x(s_weather, has_icon ? 350 : 315); lv_obj_set_width(s_weather, has_icon ? 45 : 80);
+    lv_obj_set_x(s_weather, has_icon ? 348 : 315); lv_obj_set_width(s_weather, has_icon ? 47 : 80);
     if (valid_weather) snprintf(b, sizeof(b), "%.*s", (int)(newline-weather), weather);
     else snprintf(b, sizeof(b), "%s", weather && *weather ? weather : "天气 --");
     text_changed(s_weather, b);

@@ -16,13 +16,20 @@ source = Path(sys.argv[1]) / "icons"
 target = Path(__file__).resolve().parents[1] / "firmware/components/app_ui/weather_icons.inc"
 codes = sorted(int(p.stem) for p in source.glob("*.svg")
                if re.fullmatch(r"\d{3}", p.stem))
+size = 28
 lines = ["// QWeather Icons, Copyright (c) 2021 QWeather, MIT license.",
-         "// Source: https://github.com/qwd/Icons; 32x32, 1-bit alpha."]
+         f"// Source: https://github.com/qwd/Icons; {size}x{size}, 1-bit alpha."]
 for code in codes:
-    png = cairosvg.svg2png(url=str(source / f"{code}.svg"), output_width=32, output_height=32)
+    png = cairosvg.svg2png(url=str(source / f"{code}.svg"), output_width=size, output_height=size)
     image = Image.open(BytesIO(png)).convert("RGBA")
-    bits = [int(image.getpixel((x, y))[3] >= 96) for y in range(32) for x in range(32)]
-    packed = [sum(bits[i + b] << (7 - b) for b in range(8)) for i in range(0, len(bits), 8)]
+    # LVGL starts every alpha row on a byte boundary.  Widths that are not a
+    # multiple of eight therefore need padding at the end of each row.
+    packed = []
+    for y in range(size):
+        row = [int(image.getpixel((x, y))[3] >= 96) for x in range(size)]
+        row.extend([0] * ((8 - size % 8) % 8))
+        packed.extend(sum(row[i + b] << (7 - b) for b in range(8))
+                      for i in range(0, len(row), 8))
     lines.append(f"static const uint8_t weather_{code}[] = {{")
     lines.extend("    " + ", ".join(f"0x{v:02x}" for v in packed[i:i+16]) + ","
                  for i in range(0, len(packed), 16))
