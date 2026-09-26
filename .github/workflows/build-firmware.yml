@@ -2,7 +2,22 @@ name: build-firmware
 
 on:
   push:
+    # 只对分支推送触发。tag 推送交给 release.yml，
+    # 否则发一次版本会把同一份固件编两遍（分支一次 + tag 一次）。
+    branches:
+      - "**"
+    paths-ignore:
+      - "doc/**"
+      - "design/**"
+      - "service/**"
+      - "**/*.md"
+      - ".github/workflows/release.yml"
   workflow_dispatch:
+
+# 同一分支连续推送时取消上一次未完成的构建
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
