@@ -1,4 +1,4 @@
-name: Release Docker Images
+name: Release Docker Image
 
 on:
   push:
@@ -12,7 +12,6 @@ permissions:
 
 env:
   GHCR_IMAGE: ghcr.io/${{ github.repository }}
-  ACR_IMAGE: ${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ALIYUN_NAMESPACE }}/${{ secrets.DOCKER_IMAGE_NAME }}
 
 jobs:
   build-push:
@@ -42,20 +41,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Login to Aliyun ACR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ secrets.ALIYUN_REGISTRY }}
-          username: ${{ secrets.ALIYUN_USERNAME }}
-          password: ${{ secrets.ALIYUN_PASSWORD }}
-
       - name: Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: |
-            ${{ env.GHCR_IMAGE }}
-            ${{ env.ACR_IMAGE }}
+          images: ${{ env.GHCR_IMAGE }}
           tags: |
             type=ref,event=tag
             type=semver,pattern={{version}}
@@ -71,7 +61,7 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "build_time=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
 
-      - name: Build and push to GHCR and Aliyun ACR
+      - name: Build and push to GHCR
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -95,5 +85,6 @@ jobs:
           files: |
             service/docker-compose.yml
             conf/config.yml.sample
+            conf/worktime.sql
             script/release.ps1
             script/release.sh

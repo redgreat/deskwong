@@ -60,7 +60,24 @@ static int inflate_gzip(char *buf, int total) {
     return (int)dlen;
 }
 
+/* 打开底层 TLS/HTTP 的调试日志（编译期需 CONFIG_LOG_MAXIMUM_LEVEL_DEBUG） */
+static void diag_once(void) {
+    static bool done = false;
+    if (done) return;
+    done = true;
+    esp_log_level_set("esp-tls", ESP_LOG_DEBUG);
+    esp_log_level_set("esp-tls-mbedtls", ESP_LOG_DEBUG);
+    esp_log_level_set("HTTP_CLIENT", ESP_LOG_DEBUG);
+}
+
+static void log_heap(const char *stage) {
+    ESP_LOGI(TAG, "%s: internal=%u psram=%u", stage,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+}
+
 cJSON *http_get_json(const char *url, const char *bearer_token) {
+    diag_once();
     if (!ensure_buf()) return NULL;
     esp_http_client_config_t cfg = {
         .url = url,
@@ -81,9 +98,11 @@ cJSON *http_get_json(const char *url, const char *bearer_token) {
     /* 小型 MCU 不解压 gzip/curl 默认行为，显式要求明文 */
     esp_http_client_set_header(client, "Accept-Encoding", "identity");
     esp_http_client_set_header(client, "User-Agent", "deskwong/1.0");
+    log_heap("connect");
     esp_err_t err = esp_http_client_open(client, 0);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "open fail: %s (err=0x%x %s)", url, err, esp_err_to_name(err));
+        log_heap("connect-failed");
         esp_http_client_cleanup(client);
         return NULL;
     }

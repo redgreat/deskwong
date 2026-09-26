@@ -21,6 +21,15 @@ $env:IDF_TOOLS_PATH = "C:\Users\wangcw\.espressif"
 $env:PYTHONUTF8     = "1"
 $env:PYTHONIOENCODING = "utf-8"
 
+# 首次配置（或 build/ 被删除后重新全量配置）时，CMake 需要从 PATH 找到交叉编译器
+$toolchain = Get-ChildItem "$env:IDF_TOOLS_PATH\tools\xtensa-esp-elf\*\xtensa-esp-elf\bin" `
+    -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($toolchain) {
+    $env:PATH = "$($toolchain.FullName);$env:PATH"
+} else {
+    Write-Host "WARN: xtensa toolchain not found under $env:IDF_TOOLS_PATH\tools" -ForegroundColor Yellow
+}
+
 if (-not $Port) {
     $ports = [System.IO.Ports.SerialPort]::GetPortNames() | Sort-Object
     if (-not $ports) { throw "No serial port detected. Connect the board first." }

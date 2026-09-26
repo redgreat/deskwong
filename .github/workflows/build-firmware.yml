@@ -30,14 +30,20 @@ jobs:
 
       - name: Generate SPIFFS image
         run: |
+          # esp-idf-ci-action 在独立容器里跑，IDF_PATH 不会留到后续 step，这里按版本下载打包脚本
+          curl -fsSL -o spiffsgen.py \
+            https://raw.githubusercontent.com/espressif/esp-idf/v5.5.1/components/spiffs/spiffsgen.py
+          # 固件读的是 /spiffs/www/<file>，所以 dist 必须放进 www/ 子目录
+          rm -rf spiffs_tmp
           mkdir -p spiffs_tmp/www
-          cp -r web/dist/* spiffs_tmp/www/
-          python "$IDF_PATH/components/spiffs/spiffsgen.py" 0x7E0000 spiffs_tmp spiffs.bin
+          cp -r web/dist/. spiffs_tmp/www/
+          python3 spiffsgen.py 0x7E0000 spiffs_tmp spiffs.bin
+          ls -l spiffs.bin
 
       - name: Merge flash image
         run: |
-          pip install esptool
-          python -m esptool --chip esp32s3 merge_bin -o deskwong-merged.bin \
+          python3 -m pip install --quiet esptool
+          python3 -m esptool --chip esp32s3 merge_bin -o deskwong-merged.bin \
             0x0 firmware/build/bootloader/bootloader.bin \
             0x8000 firmware/build/partition_table/partition-table.bin \
             0xf000 firmware/build/ota_data_initial.bin \
