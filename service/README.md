@@ -5,11 +5,11 @@ RaceBox 由设备直接上传到 MQTT Broker；本服务不再订阅 RaceBox 或
 
 ## 配置后台与持久化
 
-访问 `http://服务地址:8001/admin`，用 `server.token` 登录。设备访问令牌不能管理配置。
+访问 `http://服务地址:8001/admin`，用 `server.username` / `server.password` 登录。设备访问令牌不能管理配置。
 首次启动将 `conf/config.yml` 导入 `/app/data/settings.sqlite`；以后以 SQLite 为准。
-页面可修改每日标准工时、工时 Token、MySQL DSN、工号、SQL 文件路径、SQL 内容、超时、监听地址和管理 Token。
+页面可修改每日标准工时、工时 Token、MySQL DSN、工号、SQL 文件路径、SQL 内容、超时和管理账号密码；监听地址与设备访问 Token 在 conf/config.yml 中固定。
 点击“保存配置”后只写入 SQLite，点击“重启服务”才应用；无需重建镜像或刷固件。
-管理 Token 和 DSN 不明文回显；`******` 保留原值。工时 Token 留空则使用服务 Token。
+管理密码和 DSN 不明文回显；`******` 保留原值。工时 Token 留空则使用服务 Token。
 
 SQLite 开启 WAL 和 synchronous=FULL，保存成功前完成事务提交。
 Compose 使用命名卷 `deskwong-settings`，容器重建和断电重启后仍保留；不要删除此卷。
@@ -47,7 +47,7 @@ pingcode_ro:密码@tcp(10.0.0.10:3306)/pingcode?parseTime=true&loc=Asia%2FShangh
 docker compose -f service/docker-compose.yml up -d
 ```
 
-初次部署先修改 `conf/config.yml` 的 `server.token`，不要使用示例值。
+初次部署先修改 `conf/config.yml` 的 `server.token` 和 `server.password`，不要使用示例值。
 以后在 `/admin` 修改；YAML 只用于新建 SQLite 时的初始导入。
 MQTT Broker、主题、用户名和密码在设备后台配置；与本服务 SQLite 无关。
 
@@ -56,6 +56,6 @@ MQTT Broker、主题、用户名和密码在设备后台配置；与本服务 SQ
 | GET | /health | 无 |
 | GET | /worktime/summary | 服务 Token 或独立工时 Token |
 | GET | /ai/usage | 服务 Token |
-| GET | /admin | 页面入口；读取配置需管理 Token |
-| GET / PUT | /api/settings | 管理 Token |
-| POST | /api/restart | 管理 Token |
+| GET | /admin | 页面入口；读取配置需管理账号密码 |
+| GET / PUT | /api/settings | 管理账号密码（HTTP Basic） |
+| POST | /api/restart | 管理账号密码（HTTP Basic） |

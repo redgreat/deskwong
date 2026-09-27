@@ -1,17 +1,24 @@
 services:
   deskwong-service:
-    image: ${DESKWONG_IMAGE:-ghcr.io/redgreat/deskwong:latest}
+    image: ghcr.io/redgreat/deskwong:latest
     container_name: deskwong-service
     hostname: deskwong-service
     restart: unless-stopped
     pull_policy: always
     environment:
       TZ: Asia/Shanghai
+      DESKWONG_LOG_LEVEL: "info"
+      DESKWONG_CODEX_AUTH_FILE: "/home/nonroot/.codex/auth.json"
+      HTTPS_PROXY: "http://host.docker.internal:7890"
+      HTTP_PROXY: "http://host.docker.internal:7890"
     ports:
       - "8001:8001"
     volumes:
-      - ../conf:/app/conf:ro
+      - ./conf:/app/conf:ro
       - deskwong-settings:/app/data
+      - /home/wangcw/.codex/auth.json:/home/nonroot/.codex/auth.json:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     logging:
       driver: json-file
       options:

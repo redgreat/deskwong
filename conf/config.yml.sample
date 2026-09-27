@@ -1,20 +1,12 @@
-# 首次启动导入 SQLite；后续通过 /admin 修改，重启服务生效。
+# 首次启动导入 SQLite；之后以 /admin 后台为准，重启服务生效。
 server:
   listen: ":8001"
+  # 设备调用 /worktime/summary、/ai/usage 用的固定 Bearer Token（设备后台填同一个值）
   token: "change-me"
-  tokens: []
-  allow_cidrs: []
-
-worktime:
-  expected_daily_hours: 8
-  token: ""
-  mysql:
-    dsn: ""
-    employee_no: ""
-    query_file: "/app/conf/worktime.sql"
-    query: ""
-    timeout_sec: 10
+  # /admin 管理后台登录账号密码
+  username: "admin"
+  password: "admin"    # 部署后请立即在 /admin 里改掉
 
 log:
-  level: "info"
-  format: "text"
+  level: "info"   # debug | info | warn | error；可被环境变量 DESKWONG_LOG_LEVEL 覆盖
+  format: "text"  # text | json；可被环境变量 DESKWONG_LOG_FORMAT 覆盖
