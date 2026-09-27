@@ -8,6 +8,39 @@
 
 static const char *TAG = "audio";
 static esp_codec_dev_handle_t s_playback = NULL;
+static esp_codec_dev_handle_t s_record = NULL;
+
+static void mic_self_test(void) {
+    if (s_record == NULL) return;
+    static int16_t samples[320 * 2];
+    int64_t sum_sq[2] = {0, 0};
+    int64_t sum[2] = {0, 0};
+    int peak[2] = {0, 0};
+    int frames = 0;
+    for (int block = 0; block < 10; ++block) {
+        int rc = esp_codec_dev_read(s_record, samples, sizeof(samples));
+        if (rc != ESP_CODEC_DEV_OK) {
+            ESP_LOGE(TAG, "mic self-test read failed: %d", rc);
+            return;
+        }
+        for (int i = 0; i < 320; ++i) {
+            for (int ch = 0; ch < 2; ++ch) {
+                int v = samples[i * 2 + ch];
+                int a = v < 0 ? -v : v;
+                sum[ch] += v;
+                sum_sq[ch] += (int64_t)v * v;
+                if (a > peak[ch]) peak[ch] = a;
+            }
+        }
+        frames += 320;
+    }
+    double rms_l = sqrt((double)sum_sq[0] / frames);
+    double rms_r = sqrt((double)sum_sq[1] / frames);
+    ESP_LOGI(TAG, "mic self-test: frames=%d L(rms=%.1f peak=%d dc=%.1f) R(rms=%.1f peak=%d dc=%.1f)",
+             frames, rms_l, peak[0], (double)sum[0] / frames,
+             rms_r, peak[1], (double)sum[1] / frames);
+    if (peak[0] < 8 && peak[1] < 8) ESP_LOGW(TAG, "mic self-test: no input signal");
+}
 
 void audio_service_init(void) {
     set_codec_board_type("S3_RLCD_4_2");
@@ -21,18 +54,27 @@ void audio_service_init(void) {
         return;
     }
     s_playback = get_playback_handle();
-    if (s_playback == NULL) {
-        ESP_LOGE(TAG, "no playback handle");
-        return;
-    }
+    s_record = get_record_handle();
     esp_codec_dev_sample_info_t fs = {
         .sample_rate = 16000,
         .channel = 2,
         .bits_per_sample = 16,
     };
-    esp_codec_dev_open(s_playback, &fs);
-    esp_codec_dev_set_out_vol(s_playback, 60);
-    ESP_LOGI(TAG, "audio init ok");
+    if (s_playback == NULL || esp_codec_dev_open(s_playback, &fs) != ESP_CODEC_DEV_OK) {
+        ESP_LOGE(TAG, "playback open failed");
+        s_playback = NULL;
+    } else {
+        esp_codec_dev_set_out_vol(s_playback, 60);
+    }
+    if (s_record == NULL || esp_codec_dev_open(s_record, &fs) != ESP_CODEC_DEV_OK) {
+        ESP_LOGE(TAG, "record open failed");
+        s_record = NULL;
+    } else {
+        esp_codec_dev_set_in_gain(s_record, 30.0f);
+    }
+    ESP_LOGI(TAG, "audio init: playback=%s record=%s", s_playback ? "ok" : "failed",
+             s_record ? "ok" : "failed");
+    mic_self_test();
 }
 
 void audio_service_set_volume(int vol) {

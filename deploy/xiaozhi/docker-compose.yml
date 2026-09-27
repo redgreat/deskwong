@@ -1,0 +1,35 @@
+services:
+  server:
+    image: ghcr.nju.edu.cn/xinnan-tech/xiaozhi-esp32-server:server_latest
+    container_name: xiaozhi-server
+    restart: unless-stopped
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      TZ: Asia/Shanghai
+    ports:
+      - "8031:8000"
+      - "8033:8003"
+    volumes:
+      - ./data:/opt/xiaozhi-esp32-server/data
+      - ./models/SenseVoiceSmall/model.pt:/opt/xiaozhi-esp32-server/models/SenseVoiceSmall/model.pt:ro
+
+  console:
+    image: ghcr.nju.edu.cn/xinnan-tech/xiaozhi-esp32-server:web_latest
+    container_name: xiaozhi-console
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      SPRING_DATASOURCE_DRUID_URL: jdbc:mysql://host.docker.internal:3306/xiaozhi_esp32_server?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&nullCatalogMeansCurrent=true&connectTimeout=30000&socketTimeout=30000&autoReconnect=true&failOverReadOnly=false&maxReconnects=10
+      SPRING_DATASOURCE_DRUID_USERNAME: xiaozhi
+      SPRING_DATASOURCE_DRUID_PASSWORD: CHANGE_ME_MYSQL_PASSWORD
+      SPRING_DATA_REDIS_HOST: host.docker.internal
+      SPRING_DATA_REDIS_PORT: 6379
+      SPRING_DATA_REDIS_PASSWORD: ""
+      SPRING_DATA_REDIS_DATABASE: 0
+    ports:
+      - "8032:8002"
+    volumes:
+      - ./uploadfile:/uploadfile
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

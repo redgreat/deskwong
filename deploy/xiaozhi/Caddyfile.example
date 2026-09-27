@@ -1,0 +1,16 @@
+voice.example.com {
+    handle /xiaozhi/v1/* {
+        reverse_proxy 127.0.0.1:18031
+    }
+    handle /xiaozhi/ota/* {
+        reverse_proxy 127.0.0.1:18033
+    }
+    handle /mcp/* {
+        reverse_proxy 127.0.0.1:18033
+    }
+    respond 404
+}
+
+xiaozhi-admin.example.com {
+    reverse_proxy 127.0.0.1:18032
+}
