@@ -21,7 +21,16 @@ static void cpy(char *dst, size_t n, cJSON *it) {
 int aiusage_service_fetch(ai_provider_t *out, int max, int *count) {
     if (s_base[0] == '\0') return 1;
     char url[320];
-    snprintf(url, sizeof(url), "%s/ai/usage", s_base);
+    size_t base_len = strlen(s_base);
+    while (base_len > 0 && s_base[base_len - 1] == '/') base_len--;
+    static const char endpoint[] = "/ai/usage";
+    size_t endpoint_len = sizeof(endpoint) - 1;
+    if (base_len >= endpoint_len &&
+        memcmp(s_base + base_len - endpoint_len, endpoint, endpoint_len) == 0) {
+        snprintf(url, sizeof(url), "%.*s", (int)base_len, s_base);
+    } else {
+        snprintf(url, sizeof(url), "%.*s%s", (int)base_len, s_base, endpoint);
+    }
     cJSON *j = http_get_json(url, s_token);
     if (!j) return 1;
     cJSON *data = cJSON_GetObjectItem(j, "data");

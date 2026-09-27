@@ -3,8 +3,10 @@
 #include <assert.h>
 #include <string.h>
 static const char *response;
+static char requested_url[320];
 cJSON *http_get_json(const char *url, const char *token) {
-    assert(strcmp(url, "http://mock/ai/usage") == 0);
+    strncpy(requested_url, url, sizeof(requested_url) - 1);
+    requested_url[sizeof(requested_url) - 1] = 0;
     return response ? cJSON_Parse(response) : NULL;
 }
 int main(void) {
@@ -15,6 +17,7 @@ int main(void) {
         "{\"id\":\"chatgpt_weekly\",\"window_minutes\":10080,\"used_percent\":56,\"resets_at\":1789741800},"
         "{\"id\":\"deepseek\",\"display\":\"12345\"}]}}";
     assert(aiusage_service_fetch(providers, 3, &count) == 0 && count == 3);
+    assert(strcmp(requested_url, "http://mock/ai/usage") == 0);
     assert(providers[0].window_minutes == 300 && providers[0].remaining_percent == 72);
     assert(providers[0].resets_at == 1789223400LL);
     assert(providers[1].window_minutes == 10080 && providers[1].remaining_percent == 44);
@@ -24,5 +27,10 @@ int main(void) {
     assert(providers[0].window_minutes == 0 && providers[0].resets_at == 0);
     response = NULL;
     assert(aiusage_service_fetch(providers, 3, &count) != 0);
+
+    aiusage_service_init("https://ai.example.com/ai/usage/", "test");
+    response = "{\"data\":{\"providers\":[]}}";
+    assert(aiusage_service_fetch(providers, 3, &count) == 0);
+    assert(strcmp(requested_url, "https://ai.example.com/ai/usage") == 0);
     return 0;
 }

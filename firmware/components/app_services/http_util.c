@@ -124,12 +124,16 @@ cJSON *http_get_json(const char *url, const char *bearer_token) {
     }
     if (total <= 0) {
         ESP_LOGW(TAG, "http %d empty body: %s", http_status, url);
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
         return NULL;
     }
     g_buf[total] = 0;
     if (g_buf[0] == 0x1f) total = inflate_gzip(g_buf, total);
     if (http_status < 200 || http_status >= 300) {
         ESP_LOGW(TAG, "http %d len=%d head=%.90s", http_status, total, g_buf);
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
         return NULL;
     }
     if (g_buf[0] != '{' && g_buf[0] != '[') {
