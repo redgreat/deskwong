@@ -39,7 +39,9 @@ pingcode_ro:密码@tcp(10.0.0.10:3306)/pingcode?parseTime=true&loc=Asia%2FShangh
 
 `DESKWONG_AI_UPSTREAM` 可代理自建适配器。否则读取 `DESKWONG_CODEX_ACCESS_TOKEN`，
 或 `DESKWONG_CODEX_AUTH_FILE` 指定的 Codex auth.json（默认 `~/.codex/auth.json`）。
-凭据不打包进镜像；接口结果缓存 60 秒。
+直接设置 Access Token 时还应设置 `DESKWONG_CODEX_ACCOUNT_ID`。凭据不打包进镜像；
+接口结果缓存 60 秒。Docker 应只读挂载整个 `.codex` 目录，不能只挂载 `auth.json`：
+Codex 刷新登录时会原子替换文件，只挂载单文件会让容器继续读取旧 inode。
 
 ## 运行
 
