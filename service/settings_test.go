@@ -14,7 +14,8 @@ func TestSettingsPersistAndRestartBoundary(t *testing.T) {
 	var seed Config
 	seed.Server.Listen = ":8001"
 	seed.Server.Token = "admin-secret"
-	seed.Server.Tokens = []string{"device-only"}
+	seed.Server.Username = "admin"
+	seed.Server.Password = "admin-secret"
 	seed.Worktime.MySQL.DSN = "user:secret@tcp(localhost:3306)/pingcode"
 	path := filepath.Join(t.TempDir(), "settings.sqlite")
 	db, err := openSettings(path, seed)
@@ -28,15 +29,15 @@ func TestSettingsPersistAndRestartBoundary(t *testing.T) {
 	app := &App{cfg: cfg, settings: db}
 	mux := http.NewServeMux()
 	app.registerAdmin(mux)
-	request := func(method, token string, body []byte) *httptest.ResponseRecorder {
+	request := func(method, password string, body []byte) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(method, "/api/settings", bytes.NewReader(body))
-		r.Header.Set("Authorization", "Bearer "+token)
+		r.SetBasicAuth("admin", password)
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, r)
 		return w
 	}
-	if w := request("GET", "device-only", nil); w.Code != 401 {
-		t.Fatal("device token allowed to administer")
+	if w := request("GET", "wrong-password", nil); w.Code != 401 {
+		t.Fatal("wrong password allowed to administer")
 	}
 	w := request("GET", "admin-secret", nil)
 	if w.Code != 200 || strings.Contains(w.Body.String(), "user:secret") || strings.Contains(w.Body.String(), "admin-secret") {
@@ -67,11 +68,8 @@ func TestSettingsPersistAndRestartBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if saved.Worktime.MySQL.EmployeeNo != "ZR16060018" || saved.Worktime.MySQL.DSN != cfg.Worktime.MySQL.DSN || saved.Server.Token != "admin-secret" {
+	if saved.Worktime.MySQL.EmployeeNo != "ZR16060018" || saved.Worktime.MySQL.DSN != cfg.Worktime.MySQL.DSN || saved.Server.Token != "admin-secret" || saved.Server.Password != "admin-secret" {
 		t.Fatal("persistent config or masked secrets were lost")
-	}
-	if len(saved.Server.Tokens) != 1 {
-		t.Fatal("device tokens lost")
 	}
 	app.settings = db
 	bad := saved

@@ -16,7 +16,6 @@ func TestAuthorization(t *testing.T) {
 
 	var cfg Config
 	cfg.Server.Token = "test-token"
-	cfg.Server.Tokens = []string{"device-b"}
 	app := &App{cfg: cfg, client: upstream.Client()}
 
 	unauthorized := httptest.NewRecorder()
@@ -26,7 +25,7 @@ func TestAuthorization(t *testing.T) {
 	}
 
 	ok := httptest.NewRequest(http.MethodGet, "/ai/usage", nil)
-	ok.Header.Set("Authorization", "Bearer device-b")
+	ok.Header.Set("Authorization", "Bearer test-token")
 	rec := httptest.NewRecorder()
 	app.authorize(app.aiUsage)(rec, ok)
 	if rec.Code != http.StatusOK {

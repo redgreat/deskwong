@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -34,10 +33,10 @@ const (
 
 type Config struct {
 	Server struct {
-		Listen    string   `yaml:"listen" json:"listen"`
-		Token     string   `yaml:"token" json:"token"`
-		Tokens    []string `yaml:"tokens" json:"tokens"`
-		AllowCIDR []string `yaml:"allow_cidrs" json:"allow_cidrs"`
+		Listen   string `yaml:"listen" json:"listen"`
+		Token    string `yaml:"token" json:"token"`
+		Username string `yaml:"username" json:"username"`
+		Password string `yaml:"password" json:"password"`
 	} `yaml:"server" json:"server"`
 	Worktime struct {
 		// 直接从公司 PingCode 的 MySQL 取工时；SQL 放在镜像里的模板文件，方便你自己替换
@@ -67,8 +66,6 @@ type App struct {
 	aiMu      sync.Mutex
 	aiCached  []byte
 	aiCacheAt time.Time
-
-	cidrs []*net.IPNet
 }
 
 func loadConfig(path string) (Config, error) {
@@ -87,20 +84,29 @@ func loadConfig(path string) (Config, error) {
 }
 
 func setupLogger(cfg Config) {
-	var level slog.Level
-	switch strings.ToLower(cfg.Log.Level) {
-	case "debug":
-		level = slog.LevelDebug
-	case "warn", "warning":
-		level = slog.LevelWarn
-	case "error":
-		level = slog.LevelError
-	default:
-		level = slog.LevelInfo
+	// 环境变量优先（docker-compose 里可直接设置），其次 conf/config.yml 的 log 段
+	level := strings.ToLower(cfg.Log.Level)
+	if env := strings.ToLower(os.Getenv("DESKWONG_LOG_LEVEL")); env != "" {
+		level = env
 	}
-	opts := &slog.HandlerOptions{Level: level}
+	var lv slog.Level
+	switch level {
+	case "debug":
+		lv = slog.LevelDebug
+	case "warn", "warning":
+		lv = slog.LevelWarn
+	case "error":
+		lv = slog.LevelError
+	default:
+		lv = slog.LevelInfo
+	}
+	opts := &slog.HandlerOptions{Level: lv}
+	format := cfg.Log.Format
+	if env := os.Getenv("DESKWONG_LOG_FORMAT"); env != "" {
+		format = env
+	}
 	var h slog.Handler
-	if strings.EqualFold(cfg.Log.Format, "json") {
+	if strings.EqualFold(format, "json") {
 		h = slog.NewJSONHandler(os.Stdout, opts)
 	} else {
 		h = slog.NewTextHandler(os.Stdout, opts)
@@ -115,46 +121,11 @@ func jsonReply(w http.ResponseWriter, status int, v any) {
 }
 
 func (a *App) tokenAllowed(got string) bool {
-	if got == "" {
-		return false
-	}
-	if a.cfg.Server.Token != "" && got == a.cfg.Server.Token {
-		return true
-	}
-	for _, t := range a.cfg.Server.Tokens {
-		if t != "" && got == t {
-			return true
-		}
-	}
-	return false
-}
-
-func (a *App) clientAllowed(r *http.Request) bool {
-	if len(a.cidrs) == 0 {
-		return true
-	}
-	host := r.RemoteAddr
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
-	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return false
-	}
-	for _, n := range a.cidrs {
-		if n.Contains(ip) {
-			return true
-		}
-	}
-	return false
+	return got != "" && a.cfg.Server.Token != "" && got == a.cfg.Server.Token
 }
 
 func (a *App) authorize(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !a.clientAllowed(r) {
-			jsonReply(w, http.StatusForbidden, map[string]any{"code": 1003, "message": "client network not allowed"})
-			return
-		}
 		got := r.Header.Get("Authorization")
 		got = strings.TrimPrefix(got, "Bearer ")
 		if got == "" {
@@ -607,6 +578,19 @@ func main() {
 			slog.Error("read settings", "error", err)
 			return
 		}
+		// 管理账号密码：SQLite 里没有时回落到 config.yml，保证旧库升级后仍能登录
+		if cfg.Server.Username == "" {
+			cfg.Server.Username = seed.Server.Username
+		}
+		if cfg.Server.Password == "" {
+			cfg.Server.Password = seed.Server.Password
+		}
+		if cfg.Server.Username == "" {
+			cfg.Server.Username = "admin"
+		}
+		if cfg.Server.Password == "" {
+			cfg.Server.Password = "admin"
+		}
 		setupLogger(cfg)
 		if err := runService(ctx, cfg, store); err != nil {
 			slog.Error("service", "error", err)
@@ -619,13 +603,6 @@ func runService(parent context.Context, cfg Config, store *sql.DB) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	app := &App{cfg: cfg, settings: store, restart: cancel, client: &http.Client{Timeout: 12 * time.Second}}
-	for _, s := range cfg.Server.AllowCIDR {
-		if _, n, err := net.ParseCIDR(s); err == nil {
-			app.cidrs = append(app.cidrs, n)
-		} else {
-			slog.Warn("invalid allow_cidrs entry", "value", s, "error", err)
-		}
-	}
 	if cfg.Worktime.MySQL.DSN != "" {
 		wdb, err := sql.Open("mysql", cfg.Worktime.MySQL.DSN)
 		if err != nil {
