@@ -16,7 +16,7 @@ services:
     volumes:
       - ./conf:/app/conf:ro
       - deskwong-settings:/app/data
-      - /home/wangcw/.codex/auth.json:/home/nonroot/.codex/auth.json:ro
+      - /home/wangcw/.codex:/home/nonroot/.codex:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     logging:

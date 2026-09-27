@@ -397,33 +397,33 @@ type codexAuthFile struct {
 	AccessToken string `json:"access_token"`
 }
 
-func codexAccessToken() (string, error) {
+func codexCredentials() (string, string, error) {
 	if tok := os.Getenv("DESKWONG_CODEX_ACCESS_TOKEN"); tok != "" {
-		return tok, nil
+		return tok, os.Getenv("DESKWONG_CODEX_ACCOUNT_ID"), nil
 	}
 	path := os.Getenv("DESKWONG_CODEX_AUTH_FILE")
 	if path == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		path = filepath.Join(home, ".codex", "auth.json")
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return "", fmt.Errorf("读取 Codex 凭据失败（%s）：%w；可在设备上重新 codex login，或设置 DESKWONG_CODEX_ACCESS_TOKEN", path, err)
+		return "", "", fmt.Errorf("读取 Codex 凭据失败（%s）：%w；可在设备上重新 codex login，或设置 DESKWONG_CODEX_ACCESS_TOKEN", path, err)
 	}
 	var f codexAuthFile
 	if err := json.Unmarshal(b, &f); err != nil {
-		return "", fmt.Errorf("解析 %s 失败：%w", path, err)
+		return "", "", fmt.Errorf("解析 %s 失败：%w", path, err)
 	}
 	if f.Tokens.AccessToken != "" {
-		return f.Tokens.AccessToken, nil
+		return f.Tokens.AccessToken, f.Tokens.AccountID, nil
 	}
 	if f.AccessToken != "" {
-		return f.AccessToken, nil
+		return f.AccessToken, f.Tokens.AccountID, nil
 	}
-	return "", errors.New("凭据里没有 access_token")
+	return "", "", errors.New("凭据里没有 access_token")
 }
 
 type codexWindow struct {
@@ -476,16 +476,23 @@ func codexProviders(u codexUsage) []map[string]any {
 }
 
 func fetchCodexUsage(ctx context.Context, client *http.Client) ([]byte, error) {
-	tok, err := codexAccessToken()
+	tok, accountID, err := codexCredentials()
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, codexUsageURL, nil)
+	usageURL := os.Getenv("DESKWONG_CODEX_USAGE_URL")
+	if usageURL == "" {
+		usageURL = codexUsageURL
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, usageURL, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+tok)
-	req.Header.Set("User-Agent", "deskwong-service/"+version)
+	if accountID != "" {
+		req.Header.Set("ChatGPT-Account-Id", accountID)
+	}
+	req.Header.Set("User-Agent", "codex-cli deskwong-service/"+version)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err

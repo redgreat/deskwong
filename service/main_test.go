@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -66,5 +68,31 @@ func TestCodexProvidersNormalization(t *testing.T) {
 	}
 	if providers[1]["resets_at"] != int64(1893553445) { // 2030-01-02T03:04:05Z
 		t.Fatalf("resets_at=%v", providers[1]["resets_at"])
+	}
+}
+
+func TestFetchCodexUsageSendsAccountID(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer test-access" {
+			t.Errorf("Authorization=%q", got)
+		}
+		if got := r.Header.Get("ChatGPT-Account-Id"); got != "acct-test" {
+			t.Errorf("ChatGPT-Account-Id=%q", got)
+		}
+		_, _ = w.Write([]byte(`{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":1,"limit_window_seconds":18000,"reset_at":1790000000}}}`))
+	}))
+	defer upstream.Close()
+
+	dir := t.TempDir()
+	authPath := filepath.Join(dir, "auth.json")
+	auth := `{"tokens":{"access_token":"test-access","account_id":"acct-test"}}`
+	if err := os.WriteFile(authPath, []byte(auth), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DESKWONG_CODEX_AUTH_FILE", authPath)
+	t.Setenv("DESKWONG_CODEX_ACCESS_TOKEN", "")
+	t.Setenv("DESKWONG_CODEX_USAGE_URL", upstream.URL)
+	if _, err := fetchCodexUsage(t.Context(), upstream.Client()); err != nil {
+		t.Fatal(err)
 	}
 }
