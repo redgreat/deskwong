@@ -41,6 +41,7 @@ typedef struct {
     int percent;        // 0..100，<0 表示进度不确定
     int uploaded;       // MQTT PUBACK-confirmed records
     int elapsed_seconds;// 本次同步从按键触发起的总用时
+    int speed_kbps_x10; // 下载平均速度，单位 0.1 KB/s
     bool download_done;
     char device[64];    // 已连接设备名
     char message[64];   // 一句话状态
@@ -61,9 +62,12 @@ int racebox_service_point_count(void);
 bool racebox_service_synced_today(void);
 void racebox_service_day_tick(int year, int month, int day);
 
-/* 上传 RBX1 二进制批次到 MQTT（QoS 1）；成功返回 0。 */
+/* 上传 RBX2 二进制批次到 MQTT（QoS 1）；成功返回 0。 */
 int racebox_publish_raw_batch(const uint8_t *records, int offset, int count,
-                              const uint8_t import_id[16]);
+                              const uint8_t sync_id[16], int session_index,
+                              int session_offset, int session_total,
+                              uint64_t session_start_utc, uint64_t session_end_utc,
+                              uint32_t session_start_itow, int32_t session_start_nanoseconds);
 
 #ifdef __cplusplus
 }

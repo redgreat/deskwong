@@ -4,7 +4,6 @@
 #include <stdlib.h>
 #include "esp_log.h"
 #include "esp_timer.h"
-#include "cJSON.h"
 #include "racebox_service.h"
 #include "racebox_ble.h"
 #include "app_mqtt.h"
@@ -15,8 +14,26 @@
 #include "freertos/task.h"
 
 #define RACEBOX_RAW_RECORD_SIZE 80u
-#define RACEBOX_MQTT_HEADER_SIZE 96u
-#define RACEBOX_MQTT_BATCH_RECORDS 48
+#define RACEBOX_MQTT_HEADER_SIZE 136u
+#define RACEBOX_MQTT_BATCH_RECORDS 720
+#define RACEBOX_RECORDS_PER_CHUNK 64
+
+typedef struct racebox_record_chunk {
+    struct racebox_record_chunk *next;
+    uint8_t records[RACEBOX_RECORDS_PER_CHUNK * RACEBOX_RAW_RECORD_SIZE];
+} racebox_record_chunk_t;
+
+typedef struct racebox_session {
+    struct racebox_session *next;
+    int index;
+    int start_offset;
+    volatile int record_count;
+    volatile bool complete;
+    uint64_t start_utc;
+    volatile uint64_t end_utc;
+    uint32_t start_itow;
+    int32_t start_nanoseconds;
+} racebox_session_t;
 
 static const char *TAG = "racebox";
 static volatile racebox_state_t s_state = RACEBOX_IDLE;
@@ -27,15 +44,21 @@ static bool s_count_accum_mode = false;
 static char s_upload_topic[96] = "deskwong/racebox/data";
 static char s_device[64] = "";
 static int s_total = 0;
-static int s_received = 0;
+static volatile int s_received = 0;
 static char s_message[64] = "";
 static int64_t s_last_activity_us = 0;
 static int64_t s_started_us = 0;
 static uint8_t s_rx_stream[4096];
 static size_t s_rx_stream_len = 0;
-static uint8_t *s_records;
-static int s_capacity;
+static racebox_record_chunk_t *s_record_chunks;
+static racebox_record_chunk_t *s_record_tail;
+static volatile int s_chunk_count;
+static int s_cached_offset;
 static volatile int s_uploaded;
+static racebox_session_t *s_sessions;
+static racebox_session_t *s_session_tail;
+static racebox_session_t *s_open_session;
+static int s_session_count;
 static volatile bool s_download_done, s_worker_active, s_cancel_upload;
 static volatile bool s_erase_pending;
 static bool s_bad_stream;
@@ -49,6 +72,79 @@ static TaskHandle_t s_daily_save_task;
 static StaticTask_t *s_daily_save_tcb;
 static StackType_t *s_daily_save_stack;
 
+static void free_record_chunks(void) {
+    racebox_record_chunk_t *chunk = s_record_chunks;
+    while (chunk) {
+        racebox_record_chunk_t *next = chunk->next;
+        free(chunk);
+        chunk = next;
+    }
+    s_record_chunks = NULL;
+    s_record_tail = NULL;
+    s_chunk_count = 0;
+    s_cached_offset = 0;
+}
+
+static void free_sessions(void) {
+    racebox_session_t *session = s_sessions;
+    while (session) {
+        racebox_session_t *next = session->next;
+        free(session);
+        session = next;
+    }
+    s_sessions = NULL;
+    s_session_tail = NULL;
+    s_open_session = NULL;
+    s_session_count = 0;
+}
+
+static bool append_record(const uint8_t *record) {
+    int slot = s_received % RACEBOX_RECORDS_PER_CHUNK;
+    if (slot == 0) {
+        racebox_record_chunk_t *chunk = heap_caps_malloc(sizeof(*chunk),
+                                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!chunk) return false;
+        chunk->next = NULL;
+        if (s_record_tail) s_record_tail->next = chunk;
+        else s_record_chunks = chunk;
+        s_record_tail = chunk;
+        s_chunk_count++;
+    }
+    memcpy(s_record_tail->records + (size_t)slot * RACEBOX_RAW_RECORD_SIZE,
+           record, RACEBOX_RAW_RECORD_SIZE);
+    return true;
+}
+
+static bool copy_record_range(int offset, int count, uint8_t *out) {
+    if (offset < s_cached_offset || count < 0 || offset > s_received - count || !out) return false;
+    racebox_record_chunk_t *chunk = s_record_chunks;
+    int chunk_index = (offset - s_cached_offset) / RACEBOX_RECORDS_PER_CHUNK;
+    for (int i = 0; chunk && i < chunk_index; ++i) chunk = chunk->next;
+    int slot = (offset - s_cached_offset) % RACEBOX_RECORDS_PER_CHUNK;
+    while (count > 0 && chunk) {
+        int take = RACEBOX_RECORDS_PER_CHUNK - slot;
+        if (take > count) take = count;
+        memcpy(out, chunk->records + (size_t)slot * RACEBOX_RAW_RECORD_SIZE,
+               (size_t)take * RACEBOX_RAW_RECORD_SIZE);
+        out += (size_t)take * RACEBOX_RAW_RECORD_SIZE;
+        count -= take;
+        chunk = chunk->next;
+        slot = 0;
+    }
+    return count == 0;
+}
+
+static void release_uploaded_chunks(void) {
+    while (s_record_chunks && s_uploaded - s_cached_offset >= RACEBOX_RECORDS_PER_CHUNK) {
+        racebox_record_chunk_t *done = s_record_chunks;
+        s_record_chunks = done->next;
+        if (!s_record_chunks) s_record_tail = NULL;
+        free(done);
+        s_cached_offset += RACEBOX_RECORDS_PER_CHUNK;
+        s_chunk_count--;
+    }
+}
+
 static uint32_t u32(const uint8_t *p) { return (uint32_t)p[0] | (uint32_t)p[1]<<8 | (uint32_t)p[2]<<16 | (uint32_t)p[3]<<24; }
 static int32_t i32(const uint8_t *p) { return (int32_t)u32(p); }
 static uint16_t u16(const uint8_t *p) { return (uint16_t)p[0] | (uint16_t)p[1]<<8; }
@@ -56,6 +152,51 @@ static int16_t i16(const uint8_t *p) { return (int16_t)u16(p); }
 static void put_u16(uint8_t *p, uint16_t v) { p[0]=(uint8_t)v; p[1]=(uint8_t)(v>>8); }
 static void put_u32(uint8_t *p, uint32_t v) {
     p[0]=(uint8_t)v; p[1]=(uint8_t)(v>>8); p[2]=(uint8_t)(v>>16); p[3]=(uint8_t)(v>>24);
+}
+static void put_u64(uint8_t *p, uint64_t v) {
+    put_u32(p, (uint32_t)v);
+    put_u32(p + 4, (uint32_t)(v >> 32));
+}
+static uint64_t record_utc14(const uint8_t *p) {
+    return (uint64_t)u16(p + 4) * 10000000000ULL +
+           (uint64_t)p[6] * 100000000ULL + (uint64_t)p[7] * 1000000ULL +
+           (uint64_t)p[8] * 10000ULL + (uint64_t)p[9] * 100ULL + p[10];
+}
+
+static bool start_session(const uint8_t *record) {
+    racebox_session_t *session = heap_caps_calloc(1, sizeof(*session),
+                                                   MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!session) return false;
+    session->index = s_session_count++;
+    session->start_offset = s_received;
+    session->start_utc = record_utc14(record);
+    session->end_utc = session->start_utc;
+    session->start_itow = u32(record);
+    session->start_nanoseconds = i32(record + 16);
+    if (s_session_tail) s_session_tail->next = session;
+    else s_sessions = session;
+    s_session_tail = session;
+    s_open_session = session;
+    return true;
+}
+
+static void update_open_session(const uint8_t *record) {
+    if (!s_open_session) return;
+    s_open_session->record_count = s_received - s_open_session->start_offset;
+    s_open_session->end_utc = record_utc14(record);
+}
+
+static void finish_open_session(void) {
+    if (!s_open_session) return;
+    if (s_open_session->record_count > 0) {
+        s_open_session->complete = true;
+        ESP_LOGI(TAG, "session %d complete offset=%d records=%d %llu_%llu",
+                 s_open_session->index, s_open_session->start_offset,
+                 s_open_session->record_count,
+                 (unsigned long long)s_open_session->start_utc,
+                 (unsigned long long)s_open_session->end_utc);
+    }
+    s_open_session = NULL;
 }
 static uint32_t crc32_ieee(const uint8_t *data, size_t len) {
     uint32_t crc=0xffffffffu;
@@ -113,6 +254,7 @@ static void on_ble_scan_done(void) {
     if (s_state == RACEBOX_SCANNING) {
         s_erase_pending = false;
         s_state = RACEBOX_FAILED;
+        s_cancel_upload = true;
         set_message("未发现设备");
         ESP_LOGW(TAG, "no RaceBox device found");
     }
@@ -178,11 +320,10 @@ static void handle_frame(const uint8_t *data, size_t len) {
         return;
     }
     if (s_state != RACEBOX_DOWNLOADING) return;
-    /* Live 0x01 packets resume after download and are not stored history. */
-    if (data[3] == 0x01) return;
     s_last_activity_us = esp_timer_get_time();
 
     if (data[3] == 0x03 && plen >= 2 && len >= 10 && data[6] == 0xFF) {
+        s_cancel_upload = true;
         s_state = RACEBOX_FAILED;
         if (data[7] == 0x23) set_message("设备拒绝下载");
         else set_message("设备拒绝命令");
@@ -191,46 +332,56 @@ static void handle_frame(const uint8_t *data, size_t len) {
     } else if (data[3] == 0x23 && plen >= 4 && len >= 12) {
             s_total = (int)((uint32_t)data[6] | ((uint32_t)data[7] << 8) |
                             ((uint32_t)data[8] << 16) | ((uint32_t)data[9] << 24));
-            if (s_total < 0 || s_total > 50000) {
-                s_state = RACEBOX_FAILED; set_message("数据过多，内存不足"); racebox_ble_stop(); return;
+            if (s_total < 0) {
+                s_state = RACEBOX_FAILED; set_message("设备数据条数异常"); racebox_ble_stop(); return;
             }
-            s_capacity = s_total;
-            if (s_capacity) s_records = heap_caps_malloc((size_t)s_capacity * 80, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-            if (s_capacity && !s_records) {
-                s_state = RACEBOX_FAILED; set_message("下载内存不足"); racebox_ble_stop(); return;
+            if (app_mqtt_status() == APP_MQTT_UNCONFIGURED) {
+                s_state=RACEBOX_FAILED; set_message("MQTT 未配置，无法流式同步"); racebox_ble_stop(); return;
             }
-            set_message("正在下载轨迹数据");
-            ESP_LOGI(TAG, "download accepted, expected=%d", s_total);
-    } else if (data[3] == 0x21) {
-        if (plen != 80 || !s_records || s_received >= s_capacity) {
+            s_worker_active = true;
+            set_message("轨迹数据云端同步中");
+            ESP_LOGI(TAG, "download accepted, expected=%d chunk_bytes=%u",
+                     s_total, (unsigned)sizeof(racebox_record_chunk_t));
+            if (app_mqtt_start() != 0 || !s_upload_tcb || !s_upload_stack ||
+                !(s_upload_task = xTaskCreateStatic(upload_worker, "racebox_upload", 6144,
+                                                     NULL, 3, s_upload_stack, s_upload_tcb))) {
+                s_worker_active=false; s_state=RACEBOX_FAILED; set_message("上传任务启动失败");
+                app_mqtt_stop(); racebox_ble_stop(); return;
+            }
+    } else if (data[3] == 0x21 || data[3] == 0x01) {
+        if (plen != RACEBOX_RAW_RECORD_SIZE || (s_total > 0 && s_received >= s_total)) {
             s_state = RACEBOX_FAILED; set_message("数据长度异常"); racebox_ble_stop(); return;
         }
-        memcpy(s_records + (size_t)s_received * 80, data + 6, 80);
+        if (!s_open_session && !start_session(data + 6)) {
+            s_cancel_upload=true; s_state = RACEBOX_FAILED; set_message("轨迹分段内存不足"); racebox_ble_stop(); return;
+        }
+        if (!append_record(data + 6)) {
+            ESP_LOGE(TAG, "trajectory cache exhausted received=%d uploaded=%d chunks=%d "
+                          "psram_free=%u psram_largest=%u",
+                     s_received, s_uploaded, s_chunk_count,
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+            s_cancel_upload=true; s_state = RACEBOX_FAILED; set_message("轨迹缓存不足"); racebox_ble_stop(); return;
+        }
         s_received++;
+        update_open_session(data + 6);
         if (s_received == 1 || s_received % 100 == 0)
             ESP_LOGI(TAG, "history record %d/%d", s_received, s_total);
+    } else if (data[3] == 0x26) {
+        /* RaceBox 的真实轨迹段边界；与 racewong 的文件名切分规则一致。 */
+        finish_open_session();
     } else if (data[3] == 0x02 && plen == 2 && data[6] == 0xFF && data[7] == 0x23) {
             if (s_bad_stream) {
-                s_state=RACEBOX_FAILED; set_message("数据校验失败，请重试"); racebox_ble_stop(); return;
+                s_cancel_upload=true; s_state=RACEBOX_FAILED; set_message("数据校验失败，请重试"); racebox_ble_stop(); return;
             }
+            finish_open_session();
             s_download_done = true;
-            s_worker_active = true;
             s_state = RACEBOX_UPLOADING;
-            set_message("准备上传 MQTT");
-            ESP_LOGI(TAG, "download complete received=%d expected=%d", s_received, s_total);
+            set_message("下载完成，正在上传剩余数据");
+            ESP_LOGI(TAG, "download complete received=%d expected=%d chunks=%d cached_bytes=%u",
+                     s_received, s_total, s_chunk_count,
+                     (unsigned)((size_t)s_chunk_count * sizeof(racebox_record_chunk_t)));
             racebox_ble_stop();
-            if (!s_received) {
-                s_worker_active=false; finish_success(); s_state=RACEBOX_DONE; set_message("下载完成，无历史数据");
-            } else if (app_mqtt_status() == APP_MQTT_UNCONFIGURED) {
-                s_worker_active=false; s_state=RACEBOX_FAILED;
-                set_message("下载完成，%s", app_mqtt_status_text());
-                ESP_LOGI(TAG,"summary downloaded=%d uploaded=0 retained=1",s_received);
-            } else if (app_mqtt_start() != 0 || !s_upload_tcb || !s_upload_stack ||
-                       !(s_upload_task = xTaskCreateStatic(upload_worker, "racebox_upload", 6144,
-                                                          NULL, 3, s_upload_stack, s_upload_tcb))) {
-                s_worker_active=false; s_state=RACEBOX_FAILED; set_message("上传内存不足，请重试");
-                app_mqtt_stop();
-            }
     }
 }
 
@@ -277,21 +428,60 @@ static void upload_worker(void *arg) {
         uint8_t import_id[16];
         for (int i=0; i<4; ++i) put_u32(import_id+i*4, esp_random());
         bool ok = true;
-        if (!s_received) set_message("下载完成，无历史数据");
-        else {
-            for (int i = 0; i < 100 && !app_mqtt_is_connected(); ++i)
-                vTaskDelay(pdMS_TO_TICKS(100));
-            if (!app_mqtt_is_connected()) { ok=false; set_message("下载完成，%s", app_mqtt_status_text()); }
-        }
-        if (ok && s_received) for (int off=0; off<s_received; off+=RACEBOX_MQTT_BATCH_RECORDS) {
+        for (int i = 0; i < 100 && !app_mqtt_is_connected() && !s_cancel_upload; ++i)
+            vTaskDelay(pdMS_TO_TICKS(100));
+        if (!app_mqtt_is_connected()) { ok=false; set_message("MQTT 连接失败，停止同步"); racebox_ble_stop(); }
+        uint8_t *batch = heap_caps_malloc(RACEBOX_MQTT_BATCH_RECORDS * RACEBOX_RAW_RECORD_SIZE,
+                                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!batch) { ok=false; set_message("上传批次内存不足"); racebox_ble_stop(); }
+        racebox_session_t *session = s_sessions;
+        while (ok) {
             if (s_cancel_upload) { ok=false; set_message("上传已取消"); break; }
-            int count = s_received-off;
-            if (count>RACEBOX_MQTT_BATCH_RECORDS) count=RACEBOX_MQTT_BATCH_RECORDS;
-            set_message("正在上传 MQTT");
+            if (!session) {
+                session = s_sessions;
+                if (!session) {
+                    if (s_download_done) break;
+                    vTaskDelay(pdMS_TO_TICKS(20));
+                    continue;
+                }
+            }
+            int session_offset = s_uploaded - session->start_offset;
+            int available = session->record_count - session_offset;
+            /* 开放中的轨迹段保留最后一批，等 0x26 后携带准确结束时间和总数。 */
+            int count = session->complete ? available : available - RACEBOX_MQTT_BATCH_RECORDS;
+            if (count <= 0) {
+                if (session->complete && available == 0) {
+                    if (session == s_session_tail && !s_download_done) {
+                        vTaskDelay(pdMS_TO_TICKS(20));
+                        continue;
+                    }
+                    racebox_session_t *done = session;
+                    session = done->next;
+                    if (s_sessions == done) s_sessions = session;
+                    if (s_session_tail == done) s_session_tail = session;
+                    free(done);
+                    continue;
+                }
+                if (s_download_done && !session->complete) {
+                    ok=false; set_message("轨迹分段不完整"); break;
+                }
+                vTaskDelay(pdMS_TO_TICKS(20));
+                continue;
+            }
+            if (count > RACEBOX_MQTT_BATCH_RECORDS) count=RACEBOX_MQTT_BATCH_RECORDS;
+            int off = s_uploaded;
+            set_message(s_download_done ? "下载完成，正在上传剩余数据" : "轨迹数据云端同步中");
+            if (!copy_record_range(off,count,batch)) {
+                ok=false; set_message("轨迹缓存读取失败"); break;
+            }
             int rc=1;
             for (int attempt=1; attempt<=3 && rc; ++attempt) {
-                rc=racebox_publish_raw_batch(s_records+(size_t)off*RACEBOX_RAW_RECORD_SIZE,
-                                             off,count,import_id);
+                rc=racebox_publish_raw_batch(batch,off,count,import_id,
+                                              session->index,session_offset,
+                                              session->complete ? session->record_count : 0,
+                                              session->start_utc,
+                                              session->complete ? session->end_utc : 0,
+                                              session->start_itow,session->start_nanoseconds);
                 if (rc && attempt<3) {
                     ESP_LOGW(TAG,"binary batch offset=%d retry=%d",off,attempt);
                     vTaskDelay(pdMS_TO_TICKS(1000));
@@ -299,16 +489,19 @@ static void upload_worker(void *arg) {
             }
             if (rc) { ok=false;set_message("MQTT 上传失败，请重试");break; }
             s_uploaded += count;
+            release_uploaded_chunks();
             ESP_LOGI(TAG,"MQTT confirmed %d/%d",s_uploaded,s_received);
         }
-        bool start_erase = ok && s_received && s_auto_erase;
+        bool start_erase = ok && s_download_done && s_received && s_auto_erase;
         if (ok && !start_erase) {
             finish_success();
-            set_message("下载及上传完成");
+            set_message(s_received ? "下载及上传完成" : "下载完成，无历史数据");
         }
         ESP_LOGI(TAG,"summary downloaded=%d uploaded=%d auto_erase=%d",
                  s_received,s_uploaded,(int)s_auto_erase);
+        free(batch);
         s_worker_active=false;
+        if (!ok) racebox_ble_stop();
         app_mqtt_stop();
         ESP_LOGI(TAG,"MQTT stopped; internal_free=%u",
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
@@ -412,7 +605,8 @@ void racebox_service_trigger(void) {
         return;
     }
     if (s_worker_active) return;
-    free(s_records); s_records=NULL; s_capacity=0;
+    free_record_chunks();
+    free_sessions();
     s_uploaded=0; s_download_done=false; s_cancel_upload=false; s_bad_stream=false; s_erase_pending=false;
     s_total = 0;
     s_received = 0;
@@ -446,6 +640,7 @@ void racebox_service_progress(racebox_progress_t *out) {
         bool was_querying = s_state == RACEBOX_QUERYING;
         bool was_erasing = s_state == RACEBOX_ERASING;
         s_state = RACEBOX_FAILED;
+        s_cancel_upload=true;
         s_erase_pending=false;
         set_message(was_erasing ? "上传完成，但设备清理超时" :
                     (was_querying ? "设备响应超时，请重试" : "下载超时，请重试"));
@@ -454,13 +649,16 @@ void racebox_service_progress(racebox_progress_t *out) {
     }
     out->uploaded=s_uploaded;
     out->elapsed_seconds=s_started_us > 0 ? (int)((esp_timer_get_time()-s_started_us)/1000000LL) : 0;
+    out->speed_kbps_x10 = out->elapsed_seconds > 0
+        ? (int)((int64_t)s_received * RACEBOX_RAW_RECORD_SIZE * 10 /
+                ((int64_t)out->elapsed_seconds * 1024)) : 0;
     out->download_done=s_download_done;
     out->state = s_state;
     out->total = s_total;
     out->received = s_received;
     /* 0x23 reports an upper bound, not an exact record count. */
     out->percent = s_download_done ? (s_received > 0 ? s_uploaded*100/s_received : 100) : (s_total > 0 && s_received <= s_total)
-                       ? (int)(s_received * 100 / s_total)
+                       ? (int)((int64_t)s_received * 100 / s_total)
                        : -1;
     snprintf(out->device, sizeof(out->device), "%s", s_device);
     snprintf(out->message, sizeof(out->message), "%s", s_message);
@@ -470,26 +668,39 @@ int racebox_service_point_count(void) { return s_point_count; }
 bool racebox_service_synced_today(void) { return s_synced_today; }
 
 int racebox_publish_raw_batch(const uint8_t *records, int offset, int count,
-                              const uint8_t import_id[16]) {
-    if (!records || !import_id || offset<0 || count<=0 || count>RACEBOX_MQTT_BATCH_RECORDS) return 1;
+                              const uint8_t sync_id[16], int session_index,
+                              int session_offset, int session_total,
+                              uint64_t session_start_utc, uint64_t session_end_utc,
+                              uint32_t session_start_itow, int32_t session_start_nanoseconds) {
+    if (!records || !sync_id || offset<0 || session_index<0 || session_offset<0 ||
+        count<=0 || count>RACEBOX_MQTT_BATCH_RECORDS) return 1;
     size_t raw_len=(size_t)count*RACEBOX_RAW_RECORD_SIZE;
     size_t frame_len=RACEBOX_MQTT_HEADER_SIZE+raw_len;
     uint8_t *frame=heap_caps_calloc(1,frame_len,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     if (!frame) return 1;
-    memcpy(frame,"RBX1",4);
-    frame[4]=1;                         /* protocol version */
-    frame[5]=0;                         /* flags: raw, uncompressed */
+    memcpy(frame,"RBX2",4);
+    frame[4]=2;                         /* protocol version */
+    bool session_final = session_total > 0 && session_offset + count == session_total;
+    bool sync_final = session_final && s_download_done && offset + count == s_received;
+    frame[5]=(sync_final ? 1 : 0) | (session_final ? 2 : 0);
     put_u16(frame+6,RACEBOX_MQTT_HEADER_SIZE);
     put_u16(frame+8,RACEBOX_RAW_RECORD_SIZE);
     put_u16(frame+10,(uint16_t)count);
     put_u32(frame+12,(uint32_t)offset);
-    put_u32(frame+16,(uint32_t)s_received);
+    put_u32(frame+16,(uint32_t)(sync_final ? s_received : s_total));
     put_u32(frame+20,(uint32_t)s_sync_day);
-    memcpy(frame+24,import_id,16);
+    memcpy(frame+24,sync_id,16);
     memcpy(frame+40,s_device,strnlen(s_device,47));
+    put_u32(frame+88,(uint32_t)session_index);
+    put_u32(frame+92,(uint32_t)session_offset);
+    put_u32(frame+96,(uint32_t)session_total);
+    put_u64(frame+100,session_start_utc);
+    put_u64(frame+108,session_end_utc);
+    put_u32(frame+116,session_start_itow);
+    put_u32(frame+120,(uint32_t)session_start_nanoseconds);
     memcpy(frame+RACEBOX_MQTT_HEADER_SIZE,records,raw_len);
-    put_u32(frame+88,crc32_ieee(records,raw_len));
-    put_u32(frame+92,crc32_ieee(frame,92));
+    put_u32(frame+128,crc32_ieee(records,raw_len));
+    put_u32(frame+132,crc32_ieee(frame,132));
     int ret=app_mqtt_publish_bytes_confirmed(s_upload_topic,frame,frame_len,60000);
     ESP_LOGI(TAG,"publish binary offset=%d records=%d bytes=%u -> %d",
              offset,count,(unsigned)frame_len,ret);

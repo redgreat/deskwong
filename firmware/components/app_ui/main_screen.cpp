@@ -117,16 +117,29 @@ static void update_quota(int index, const ai_provider_t *quota) {
     char text[32];
     if (quota && quota->resets_at > 0) {
         time_t reset = (time_t)quota->resets_at;
-        struct tm local;
+        struct tm local = {};
 #ifdef _WIN32
         bool converted = localtime_s(&local, &reset) == 0;
 #else
         bool converted = localtime_r(&reset, &local) != NULL;
 #endif
-        if (converted)
-            strftime(text, sizeof(text), index == 0 ? "%H:%M" : "%m/%d\n%H:%M", &local);
-        else strcpy(text, "--:--");
-    } else strcpy(text, index == 0 ? "--:--" : "--/--\n--:--");
+        if (converted && index == 1) {
+            time_t now = time(NULL);
+            struct tm today = {};
+#ifdef _WIN32
+            bool today_converted = localtime_s(&today, &now) == 0;
+#else
+            bool today_converted = localtime_r(&now, &today) != NULL;
+#endif
+            bool resets_today = today_converted && local.tm_year == today.tm_year &&
+                                local.tm_yday == today.tm_yday;
+            strftime(text, sizeof(text), resets_today ? "%H:%M" : "%m/%d", &local);
+        } else if (converted) {
+            strftime(text, sizeof(text), "%H:%M", &local);
+        } else {
+            strcpy(text, index == 0 ? "--:--" : "--/--");
+        }
+    } else strcpy(text, index == 0 ? "--:--" : "--/--");
     text_changed(s_ai[index], text);
     set_meter(s_ai_fill[index], quota ? quota->remaining_percent : 0, 79);
 }
@@ -244,9 +257,11 @@ void main_screen_init(int width, int height) {
     label(scr, "额度", &lv_font_zh_14, 356, 209);
     label(scr, "5小时", &lv_font_zh_10, 315, 235);
     s_ai[0] = label(scr, "--:--", &lv_font_zh_14, 350, 232, 45);
+    lv_obj_set_style_text_align(s_ai[0], LV_TEXT_ALIGN_LEFT, 0);
     meter(scr, 315, 252, 79, 5, &s_ai_fill[0]);
     label(scr, "每周", &lv_font_zh_10, 315, 270);
-    s_ai[1] = label(scr, "--/--\n--:--", &lv_font_zh_10, 345, 264, 50);
+    s_ai[1] = label(scr, "--/--", &lv_font_zh_14, 350, 267, 45);
+    lv_obj_set_style_text_align(s_ai[1], LV_TEXT_ALIGN_LEFT, 0);
     meter(scr, 315, 289, 79, 5, &s_ai_fill[1]);
     s_remind = label(scr, "", &lv_font_zh_14, 7, height-25, width-14);
     lv_obj_set_style_bg_color(s_remind, lv_color_black(), 0);

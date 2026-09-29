@@ -1,140 +1,64 @@
-# RaceBox MQTT 二进制消费协议（RBX1）
+# RaceBox MQTT 二进制协议（RBX2）
 
-固件从 RBX1 版开始直接上传 RaceBox 的 80 字节原始记录，不再把每个字段展开成 JSON。
-每条 MQTT 消息最多包含 48 条记录，使用 QoS 1。750 条记录通常为 16 条 MQTT
-消息、约 61.5 KB；接收端不需要解压库，只需按小端序解码。
+默认 Topic：`deskwong/racebox/data`。所有整数均为小端，轨迹记录固定 80 字节；消息使用 MQTT QoS 1，所以消费端必须幂等。
 
-默认 Topic：`deskwong/racebox/data`。
+RBX2 把“一次蓝牙同步”和“设备中的一段轨迹”分开建模：`sync_id` 每次同步随机生成，只用于排查传输；`session_key` 由设备标识、首条记录 UTC、iTOW 和纳秒生成，同一段轨迹重复下载时保持不变。MQTT 批次不会跨越轨迹段。
 
-## 1. 消息头
+## 1. 消息结构
 
-前 96 字节是固定消息头，其后紧跟 `count * record_size` 字节的记录区。所有整数均为
-little-endian（小端序）。
+消息长度为 `136 + record_count * 80`。
 
 | 偏移 | 长度 | 字段 | 说明 |
 |---:|---:|---|---|
-| 0 | 4 | magic | ASCII `RBX1` |
-| 4 | 1 | version | 当前为 `1` |
-| 5 | 1 | flags | 当前为 `0`，表示原始记录且未压缩 |
-| 6 | 2 | header_size | 当前为 `96` |
-| 8 | 2 | record_size | 当前为 `80` |
-| 10 | 2 | count | 本消息的记录数，最大 48 |
-| 12 | 4 | offset | 本批首条记录在本次同步中的序号，从 0 开始 |
-| 16 | 4 | total | 本次同步实际下载的记录总数 |
-| 20 | 4 | sync_date | 同步日期，格式 `YYYYMMDD` |
-| 24 | 16 | import_id | 本次同步的随机 128 位 ID；用于重组和幂等去重 |
-| 40 | 48 | device_name | UTF-8 设备名，以 `NUL` 结尾，剩余字节补 0 |
-| 88 | 4 | payload_crc32 | 记录区的标准 CRC-32/IEEE |
-| 92 | 4 | header_crc32 | 头部 0..91 字节的 CRC-32/IEEE |
-| 96 | 变长 | records | `count` 个连续的 80 字节记录 |
+| 0 | 4 | magic | ASCII `RBX2` |
+| 4 | 1 | version | `2` |
+| 5 | 1 | flags | bit0=本次同步最后一批；bit1=本轨迹段最后一批 |
+| 6 | 2 | header_size | `136` |
+| 8 | 2 | record_size | `80` |
+| 10 | 2 | record_count | 本消息记录数，当前最大 720 |
+| 12 | 4 | sync_offset | 本批首条记录在本次同步中的序号 |
+| 16 | 4 | sync_total | 非最终批可为设备预报上限；最终批为实际总数 |
+| 20 | 4 | sync_date | 触发同步的本地日期 `YYYYMMDD` |
+| 24 | 16 | sync_id | UUID 原始 16 字节；每次同步随机生成 |
+| 40 | 48 | device | NUL 结尾的设备名称/序列号 |
+| 88 | 4 | session_index | 本次同步内轨迹段序号，从 0 开始 |
+| 92 | 4 | session_offset | 本批首条记录在轨迹段内的序号 |
+| 96 | 4 | session_total | 段尾前为 0，段尾批为准确总数 |
+| 100 | 8 | session_start_utc | 首条记录的 `YYYYMMDDhhmmss` 数值 |
+| 108 | 8 | session_end_utc | 段尾前为 0，段尾批为末条时间 |
+| 116 | 4 | session_start_itow | 首条记录 iTOW |
+| 120 | 4 | session_start_nano | 首条记录纳秒，有符号 |
+| 124 | 4 | reserved | 0 |
+| 128 | 4 | payload_crc32 | 所有记录字节的 IEEE CRC32 |
+| 132 | 4 | header_crc32 | `[0,132)` 的 IEEE CRC32 |
+| 136 | N×80 | records | 原始 RaceBox 记录 |
 
-QoS 1 可能重复投递。建议数据库唯一键使用
-`(import_id, record_index)`，其中 `record_index = offset + 批内序号`。
-收到所有 `0..total-1` 记录后，本次同步才算完整。
+## 2. 轨迹段与流式上传
 
-## 2. 单条 80 字节记录
+- `0x21` 和设备历史下载阶段出现的 `0x01` 都作为 80 字节轨迹记录接收。
+- RaceBox `0x26` 是精确的轨迹段边界；下载完成 ACK 也会关闭最后一个尚未关闭的段。
+- 为避免缓存数十万条记录，固件边下载边上传。开放轨迹段只保留最后 720 条；收到 `0x26` 后，最后一批携带准确的 `session_total` 和结束时间。
+- 消费端生成稳定键：`rbx2_<device>_<start_utc>_<start_itow>_<start_nano>`；批次键再追加 `_<session_offset>`。
+- 最终文件名与旧 Python 消费端一致：`<首条UTC>_<末条UTC>`。段尾前暂用包含首条 iTOW/纳秒的唯一 `_open_` 名称，段尾事务统一改名。
 
-| 偏移 | 类型 | 数据库字段 | 换算 |
-|---:|---|---|---|
-| 0 | uint32 | itow | 原值 |
-| 4 | uint16 | year | 原值 |
-| 6,7 | uint8 | month, day | 原值 |
-| 8,9,10 | uint8 | hour, minute, second | 原值 |
-| 12 | uint32 | time_accuracy | 原值 |
-| 16 | int32 | nanoseconds | 原值 |
-| 20 | uint8 | fix_status | 原值 |
-| 23 | uint8 | numberof_svs | 原值 |
-| 24 | int32 | longitude | 除以 `1e7` |
-| 28 | int32 | latitude | 除以 `1e7` |
-| 32 | int32 | wgs_altitude | 除以 `1000`，米 |
-| 36 | int32 | msl_altitude | 除以 `1000`，米 |
-| 40 | uint32 | horizontal_accuracy | 除以 `1000`，米 |
-| 44 | uint32 | vertical_accuracy | 除以 `1000`，米 |
-| 48 | int32 | speed | 除以 `1000`，m/s |
-| 52 | int32 | heading | 除以 `1e5`，度 |
-| 56 | uint32 | speed_accuracy | 原值 |
-| 60 | uint32 | heading_accuracy | 原值 |
-| 64 | uint16 | pdop | 原值 |
-| 68,70,72 | int16 | gforce_x/y/z | 各除以 `1000` |
-| 74,76,78 | int16 | rotation_rate_x/y/z | 各除以 `100` |
+## 3. 幂等规则
 
-未列出的字节为 RaceBox 保留字段，消费端应忽略。
+消费端应同时落实三层约束：
 
-## 3. Python 解码示例
+1. `imp_racebox.session_key` 唯一：同一轨迹段重复同步只保留一份。
+2. `imp_racebox_batch.batch_key` 唯一：MQTT QoS 1 重投不重复处理批次。
+3. `lc_racebox(session_key, record_index)` 唯一：记录级最终防线。
 
-```python
-import struct
-import uuid
-import zlib
+如果数据库已存在旧 Python 消费端按最终文件名导入的数据：短轨迹在首个最终批直接跳过；长轨迹先前产生的 `_open` 临时数据在段尾事务中删除，保留旧数据。
 
-HEADER_SIZE = 96
-RECORD_SIZE = 80
+只有实际明细数达到 `session_total` 时，导入状态才从 `receiving` 变为 `complete`。中断后的再次同步可以补齐缺失批次。
 
-def decode_record(raw: bytes) -> dict:
-    assert len(raw) == RECORD_SIZE
-    u32 = lambda off: struct.unpack_from("<I", raw, off)[0]
-    i32 = lambda off: struct.unpack_from("<i", raw, off)[0]
-    u16 = lambda off: struct.unpack_from("<H", raw, off)[0]
-    i16 = lambda off: struct.unpack_from("<h", raw, off)[0]
-    return {
-        "itow": u32(0), "year": u16(4), "month": raw[6], "day": raw[7],
-        "hour": raw[8], "minute": raw[9], "second": raw[10],
-        "time_accuracy": u32(12), "nanoseconds": i32(16),
-        "fix_status": raw[20], "numberof_svs": raw[23],
-        "longitude": i32(24) / 1e7, "latitude": i32(28) / 1e7,
-        "wgs_altitude": i32(32) / 1000.0,
-        "msl_altitude": i32(36) / 1000.0,
-        "horizontal_accuracy": u32(40) / 1000.0,
-        "vertical_accuracy": u32(44) / 1000.0,
-        "speed": i32(48) / 1000.0, "heading": i32(52) / 1e5,
-        "speed_accuracy": u32(56), "heading_accuracy": u32(60),
-        "pdop": u16(64),
-        "gforce_x": i16(68) / 1000.0,
-        "gforce_y": i16(70) / 1000.0,
-        "gforce_z": i16(72) / 1000.0,
-        "rotation_rate_x": i16(74) / 100.0,
-        "rotation_rate_y": i16(76) / 100.0,
-        "rotation_rate_z": i16(78) / 100.0,
-    }
+## 4. 80 字节记录
 
-def decode_rbx1(payload: bytes) -> dict:
-    if len(payload) < HEADER_SIZE or payload[:4] != b"RBX1":
-        raise ValueError("不是 RBX1 消息")
-    version, flags = payload[4], payload[5]
-    header_size, record_size, count = struct.unpack_from("<HHH", payload, 6)
-    offset, total, sync_date = struct.unpack_from("<III", payload, 12)
-    if version != 1 or flags != 0 or header_size != 96 or record_size != 80:
-        raise ValueError("不支持的 RBX1 版本或编码")
-    if len(payload) != header_size + count * record_size:
-        raise ValueError("消息长度错误")
-    data_crc, header_crc = struct.unpack_from("<II", payload, 88)
-    records_raw = payload[header_size:]
-    if zlib.crc32(payload[:92]) & 0xffffffff != header_crc:
-        raise ValueError("消息头 CRC 错误")
-    if zlib.crc32(records_raw) & 0xffffffff != data_crc:
-        raise ValueError("记录区 CRC 错误")
-    import_id = str(uuid.UUID(bytes=payload[24:40]))
-    device_name = payload[40:88].split(b"\0", 1)[0].decode("utf-8")
-    records = []
-    for i in range(count):
-        row = decode_record(records_raw[i*80:(i+1)*80])
-        row.update(import_id=import_id, record_index=offset+i,
-                   device_name=device_name, sync_date=sync_date)
-        records.append(row)
-    return {"import_id": import_id, "offset": offset, "total": total,
-            "device_name": device_name, "sync_date": sync_date,
-            "records": records}
-```
+记录字段布局沿用 RBX1/RaceBox 原始格式。主要偏移：iTOW 0、UTC 年月日时分秒 4..10、纳秒 16、fix 20、卫星数 23、经纬度 24/28、海拔 32/36、精度 40/44、速度 48、航向 52、速度/航向精度 56/60、PDOP 64、三轴加速度 68/70/72、三轴角速度 74/76/78。
 
-Paho MQTT 的 `msg.payload` 本身就是 `bytes`，直接调用
-`batch = decode_rbx1(msg.payload)`，再使用数据库批量插入即可。插入时使用
-`INSERT ... ON DUPLICATE KEY UPDATE` 或 `INSERT IGNORE`，以应对 QoS 1 重复消息。
+速度原始单位为 mm/s，插件写入 `lc_racebox.speed` 前转换为 km/h。
 
-## 4. 完整性与失败处理
+## 5. RBX1 兼容
 
-1. 先校验两个 CRC，再写数据库。
-2. 按 `import_id` 分组，按 `record_index` 去重。
-3. 同一个 `import_id` 收到的 `total` 应保持一致。
-4. 数据库中该 `import_id` 的不同 `record_index` 数量等于 `total` 时，标记导入完成。
-5. 连接中断时设备会对当前批次最多重试 3 次；重复消息不会代表新增轨迹点。
-
+插件仍能解码 RBX1（96 字节头），并接受 flags bit0 的最终批标记，供旧固件过渡使用。RBX1 只有随机 `import_id + offset` 的消息级去重，无法识别跨同步的同一轨迹段；新固件必须使用 RBX2。
