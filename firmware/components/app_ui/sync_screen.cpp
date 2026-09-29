@@ -47,7 +47,8 @@ static void text_set(lv_obj_t *o, const char *v) {
 }
 
 extern "C" void sync_screen_init(int width, int height) {
-    int panel_w = 224;
+    /* Keep exact six-digit counters readable instead of abbreviating them. */
+    int panel_w = 260;
     int panel_h = 128;
     int panel_x = (width - panel_w) / 2;
     int panel_y = 40;
@@ -80,15 +81,15 @@ extern "C" void sync_screen_init(int width, int height) {
     s_state = slabel(s_panel, "准备中...", &lv_font_zh_14, 10, 34, panel_w - 20);
     lv_obj_set_style_text_align(s_state, LV_TEXT_ALIGN_CENTER, 0);
 
-    lv_obj_t *download_box = sbox(s_panel, 10, 57, 98, 27, true, 7);
-    s_count = slabel(download_box, "下载 0 条", &lv_font_zh_14, 3, 5, 92);
+    lv_obj_t *download_box = sbox(s_panel, 10, 57, 114, 27, true, 7);
+    s_count = slabel(download_box, "下载 0 条", &lv_font_zh_14, 3, 5, 108);
     lv_obj_set_style_text_color(s_count, lv_color_white(), 0);
     lv_obj_set_style_text_align(s_count, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_t *upload_box = sbox(s_panel, 116, 57, 98, 27, false, 7);
+    lv_obj_t *upload_box = sbox(s_panel, 136, 57, 114, 27, false, 7);
     lv_obj_set_style_border_width(upload_box, 2, 0);
     lv_obj_set_style_border_color(upload_box, lv_color_black(), 0);
     lv_obj_set_style_border_opa(upload_box, LV_OPA_COVER, 0);
-    s_uploaded = slabel(upload_box, "上传 0 条", &lv_font_zh_14, 3, 5, 92);
+    s_uploaded = slabel(upload_box, "上传 0 条", &lv_font_zh_14, 3, 5, 108);
     lv_obj_set_style_text_align(s_uploaded, LV_TEXT_ALIGN_CENTER, 0);
 
     s_bar_width = panel_w - 20;
@@ -99,9 +100,9 @@ extern "C" void sync_screen_init(int width, int height) {
     s_bar_fill = sbox(s_bar, 1, 1, 0, 6, true, 2);
     lv_obj_add_flag(s_bar_fill, LV_OBJ_FLAG_HIDDEN);
 
-    sbox(s_panel, 10, 114, 43, 1, true, 0);
-    sbox(s_panel, 171, 114, 43, 1, true, 0);
-    s_elapsed = slabel(s_panel, "总计用时 0 秒", &lv_font_zh_10, 56, 108, 112);
+    sbox(s_panel, 10, 114, 32, 1, true, 0);
+    sbox(s_panel, 218, 114, 32, 1, true, 0);
+    s_elapsed = slabel(s_panel, "总计用时 0 秒 0.0 KB/s", &lv_font_zh_10, 46, 108, 168);
     lv_obj_set_style_text_align(s_elapsed, LV_TEXT_ALIGN_CENTER, 0);
 
 }
@@ -154,7 +155,8 @@ extern "C" void sync_screen_update(const racebox_progress_t *p) {
     text_set(s_count, count);
     snprintf(count, sizeof(count), "上传 %d 条", p->uploaded);
     text_set(s_uploaded, count);
-    snprintf(count, sizeof(count), "总计用时 %d 秒", p->elapsed_seconds);
+    snprintf(count, sizeof(count), "总计用时 %d 秒 %d.%d KB/s", p->elapsed_seconds,
+             p->speed_kbps_x10 / 10, p->speed_kbps_x10 % 10);
     text_set(s_elapsed, count);
 
     int pixels = 0;
