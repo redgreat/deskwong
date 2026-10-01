@@ -27,4 +27,4 @@ git push origin $Version
 if ($LASTEXITCODE) { die '推送标签失败' }
 
 ok "已推送 $Version，GitHub Actions 将测试、推送 GHCR 镜像并创建 GitHub Release。"
-ok "镜像地址：ghcr.io/redgreat/deskwong:$($Version.TrimStart('v')) 与 :latest"
+ok "镜像地址：ghcr.io/redgreat/deskwong:$($Version.TrimStart('v'))、quay.io/redgreat/deskwong:$($Version.TrimStart('v')) 与各自 :latest"

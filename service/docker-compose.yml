@@ -8,6 +8,8 @@ services:
     environment:
       TZ: Asia/Shanghai
       DESKWONG_LOG_LEVEL: "info"
+      # 生产环境建议设置为 32 字节密钥的 Base64；未设置时会在数据卷生成 settings.sqlite.key。
+      DESKWONG_SETTINGS_KEY: "${DESKWONG_SETTINGS_KEY:-}"
       DESKWONG_CODEX_AUTH_FILE: "/home/nonroot/.codex/auth.json"
       HTTPS_PROXY: "http://host.docker.internal:7890"
       HTTP_PROXY: "http://host.docker.internal:7890"
