@@ -43,6 +43,9 @@ typedef struct {
     int elapsed_seconds;// 本次同步从按键触发起的总用时
     int speed_kbps_x10; // 下载平均速度，单位 0.1 KB/s
     bool download_done;
+    bool erase_phase;   // 已进入设备清理阶段（失败/完成后仍用于 UI 展示结果）
+    int erase_percent;  // 设备报告的清理进度，0..100；<0 表示尚未报告
+    int erase_elapsed_seconds;
     char device[64];    // 已连接设备名
     char message[64];   // 一句话状态
 } racebox_progress_t;

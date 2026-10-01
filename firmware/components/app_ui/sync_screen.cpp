@@ -151,16 +151,38 @@ extern "C" void sync_screen_update(const racebox_progress_t *p) {
     text_set(s_state, p->message[0] ? p->message : state_text(p->state));
 
     char count[48];
-    snprintf(count, sizeof(count), "下载 %d 条", p->received);
-    text_set(s_count, count);
-    snprintf(count, sizeof(count), "上传 %d 条", p->uploaded);
-    text_set(s_uploaded, count);
-    snprintf(count, sizeof(count), "总计用时 %d 秒 %d.%d KB/s", p->elapsed_seconds,
-             p->speed_kbps_x10 / 10, p->speed_kbps_x10 % 10);
-    text_set(s_elapsed, count);
+    if (p->erase_phase) {
+        snprintf(count, sizeof(count), "云端 %d 条", p->uploaded);
+        text_set(s_count, count);
+        if (p->state == RACEBOX_DONE) {
+            text_set(s_uploaded, "清理完成");
+        } else if (p->erase_percent >= 0) {
+            snprintf(count, sizeof(count), "清理进度 %d%%", p->erase_percent);
+            text_set(s_uploaded, count);
+        } else {
+            text_set(s_uploaded, "连接设备");
+        }
+        if (p->erase_percent >= 0) {
+            snprintf(count, sizeof(count), "清理 %d 秒 进度 %d%%",
+                     p->erase_elapsed_seconds, p->erase_percent);
+        } else {
+            snprintf(count, sizeof(count), "等待设备  %d 秒", p->erase_elapsed_seconds);
+        }
+        text_set(s_elapsed, count);
+    } else {
+        snprintf(count, sizeof(count), "下载 %d 条", p->received);
+        text_set(s_count, count);
+        snprintf(count, sizeof(count), "上传 %d 条", p->uploaded);
+        text_set(s_uploaded, count);
+        snprintf(count, sizeof(count), "总计用时 %d 秒 %d.%d KB/s", p->elapsed_seconds,
+                 p->speed_kbps_x10 / 10, p->speed_kbps_x10 % 10);
+        text_set(s_elapsed, count);
+    }
 
     int pixels = 0;
-    if (p->percent >= 0) {
+    if (p->erase_phase && p->erase_percent >= 0) {
+        pixels = s_bar_width * p->erase_percent / 100;
+    } else if (p->percent >= 0) {
         pixels = s_bar_width * p->percent / 100;
     } else if (p->state == RACEBOX_DONE) {
         pixels = s_bar_width;
