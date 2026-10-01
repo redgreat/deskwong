@@ -144,8 +144,23 @@ int worktime_service_fetch(int year, int month, worktime_summary_t *out) {
         ESP_LOGW(TAG, "worktime api base not configured; showing local expected hours");
         return 1;
     }
+    /* 容错拼接：和 AI 用量一致，允许填服务根地址、/worktime 前缀或完整路径，避免出现
+     * /worktime/worktime/summary 这类重复后缀。 */
+    char base[160];
+    snprintf(base, sizeof(base), "%s", s_base);
+    size_t blen = strlen(base);
+    while (blen > 0 && base[blen - 1] == '/') base[--blen] = 0;
+    const char full[] = "/worktime/summary";
+    const char shortp[] = "/worktime";
+    if (blen >= sizeof(full) - 1 && strcmp(base + blen - (sizeof(full) - 1), full) == 0) {
+        base[blen - (sizeof(full) - 1)] = 0;
+        blen -= sizeof(full) - 1;
+    } else if (blen >= sizeof(shortp) - 1 && strcmp(base + blen - (sizeof(shortp) - 1), shortp) == 0) {
+        base[blen - (sizeof(shortp) - 1)] = 0;
+        blen -= sizeof(shortp) - 1;
+    }
     char url[320];
-    snprintf(url, sizeof(url), "%s/worktime/summary?year=%d&month=%d", s_base, year, month);
+    snprintf(url, sizeof(url), "%s/worktime/summary?year=%d&month=%d", base, year, month);
     cJSON *j = http_get_json(url, s_token);
     if (!j) return 1;
     cJSON *data = cJSON_GetObjectItem(j, "data");

@@ -167,14 +167,14 @@
       <h2>工时（PingCode）</h2>
       <label>API 地址<input bind:value={cfg.worktime_api_base} placeholder="http://host/worktime" /></label>
       <p class="muted">工时数据从 PingCode 网页 API 获取，账号密码在服务端 config.yml 配置。</p>
-      <label>Token（留空用服务端默认 Token）<input bind:value={cfg.worktime_token} placeholder="留空不修改" /></label>
+      <label>Token（与 AI 用量相同，填服务端 server.token）<input bind:value={cfg.worktime_token} placeholder="留空不修改" /></label>
     </section>
 
     <section>
       <h2>AI 用量</h2>
       <p class="section-help">ChatGPT/Codex 的 5 小时和每周订阅额度没有官方公开接口，不能直接填写 OpenAI API Key。这里连接你自己部署的聚合服务。</p>
       <label>聚合 API 地址<input bind:value={cfg.aiusage_api_base} placeholder="例如 http://20.20.10.92:8001" /></label>
-      <label>Token（留空用服务端默认 Token）<input bind:value={cfg.aiusage_token} placeholder="留空不修改" /></label>
+      <label>Token（与工时相同，填服务端 server.token）<input bind:value={cfg.aiusage_token} placeholder="留空不修改" /></label>
       <label>AI 用量刷新频率（分钟）<input type="number" bind:value={cfg.aiusage_refresh_minutes} min="1" max="1440" /></label>
       <details class="api-help">
         <summary>接口格式说明</summary>
