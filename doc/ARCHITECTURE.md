@@ -22,6 +22,7 @@ RaceBox ─BLE─> firmware ─MQTT RBX2─> agentwong/emqx_pg_ingest ─> Postg
 - ESP-IDF 5.5.1、LVGL 8.4，目标 ESP32-S3 N16R8。
 - `firmware/main/main.cpp` 负责组件初始化与任务编排。
 - `net_scheduler` 串行运行天气、工时和 AI 请求，避免共享网络缓冲并发。
+- 工时按月经 NVS 缓存（`deskwong` 命名空间的 `wt_YYYYMM` 快照）：开机先显示缓存或本地应收工时，网络任务返回后覆盖，拉取失败保留旧值，主屏不出现 `--`；缓存写入由内部 RAM 栈的小任务完成，避免 flash cache 关闭时访问 PSRAM 栈。
 - `main_screen.cpp` 是主屏布局唯一实现；`sync_screen.cpp` 是 RaceBox 同步覆盖层。
 - 显示内部使用 RGB565，flush 时阈值化为 1-bit 单色；非 8 像素宽图片按行补齐字节。
 - RaceBox 当前使用 64 条左右的小型 PSRAM 流式缓存，按 MQTT PUBACK 释放；RBX2 支持轨迹分段和稳定幂等键。

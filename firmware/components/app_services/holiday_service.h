@@ -20,6 +20,10 @@ bool holiday_is_workday(int year, int month, int day);
 /* 是否周末（自然周六/周日） */
 bool holiday_is_weekend(int year, int month, int day);
 
+/* 某月法定工作日天数：排除周末与法定节假日，计入调休上班日。
+ * 表外年份按自然周末判断，返回 0 表示年月非法。 */
+int holiday_workdays(int year, int month);
+
 #ifdef __cplusplus
 }
 #endif

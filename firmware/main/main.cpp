@@ -48,6 +48,8 @@ static int g_ai_count = 0;
 static float g_temp = 0, g_humi = 0;
 static uint8_t g_battery = 0;
 static volatile bool g_summary_dirty = false;
+/* 跨月或时间跳变后需要立刻重算工时（含应收工时） */
+static volatile bool g_worktime_stale = false;
 
 static void Lvgl_FlushCallback(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_map) {
     static bool first_flush = true;
@@ -152,7 +154,13 @@ static void job_weather(void *ctx) {
 static void job_worktime(void *ctx) {
     datetime_t now;
     time_service_now(&now);
-    worktime_service_fetch(now.year, now.month, &g_worktime);
+    if (worktime_service_fetch(now.year, now.month, &g_worktime) != 0) {
+        /* 拉取失败：保留缓存/本地应收工时，屏幕不出现 -- */
+        ESP_LOGW(TAG, "worktime refresh failed, keep %04d-%02d %.1f/%.1f",
+                 g_worktime.year, g_worktime.month, g_worktime.recorded_hours, g_worktime.expected_hours);
+        if (g_worktime.year != now.year || g_worktime.month != now.month)
+            worktime_service_load(now.year, now.month, &g_worktime);
+    }
     g_summary_dirty = true;
 }
 
@@ -178,6 +186,11 @@ static void network_service_task(void *arg) {
         }
         /* 天气配置变更 → 插队刷新一次（仍然排队，不会打断正在跑的任务） */
         if (weather_service_take_changed()) net_scheduler_request(NET_JOB_WEATHER);
+        /* 跨月/校时后工时汇总作废 → 同样插队重算，避免一直显示上个月的数 */
+        if (g_worktime_stale) {
+            g_worktime_stale = false;
+            net_scheduler_request(NET_JOB_WORKTIME);
+        }
         net_scheduler_tick(5);
         vTaskDelay(pdMS_TO_TICKS(5000));
     }
@@ -255,6 +268,8 @@ static void ui_update_task(void *arg) {
             }
 
             prepare_calendar(dt.year, dt.month, dt.day, cells);
+            /* 跨月或 NTP 校时换了月份：工时汇总要按新月份重算 */
+            if (g_worktime.year != dt.year || g_worktime.month != dt.month) g_worktime_stale = true;
 
             if (Lvgl_lock(100)) {
                 main_screen_update_time(date, NULL, week_cn(dt.weekday), lunar_full);
@@ -351,6 +366,14 @@ extern "C" void app_main(void) {
     weather_service_init(g_cfg.weather_api_url, g_cfg.weather_location, g_cfg.weather_key);
     worktime_service_init(g_cfg.worktime_api_base, g_cfg.worktime_token);
     aiusage_service_init(g_cfg.aiusage_api_base, g_cfg.aiusage_token);
+    /* 先用上次成功的月度汇总（没有就是 0 记录 + 本地应收工时）点亮屏幕，
+     * 网络任务随后覆盖；这样重启或离线时也不会一直显示 -- */
+    {
+        datetime_t boot_time;
+        time_service_now(&boot_time);
+        worktime_service_load(boot_time.year, boot_time.month, &g_worktime);
+        g_summary_dirty = true;
+    }
     reminder_service_init(on_remind);
     reminder_service_set_times(g_cfg.remind_signin_hh, g_cfg.remind_signin_mm,
                                g_cfg.remind_signout_hh, g_cfg.remind_signout_mm,
