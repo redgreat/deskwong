@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,10 +15,8 @@ import (
 	"strings"
 	"sync"
 	"syscall"
-	"text/template"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
 	"gopkg.in/yaml.v3"
 )
 
@@ -39,22 +36,13 @@ type Config struct {
 		Password string `yaml:"password" json:"password"`
 	} `yaml:"server" json:"server"`
 	Worktime struct {
-		// 优先通过 PingCode 网页 API 取工时；保留 MySQL 作为兼容数据源。
-		ExpectedDailyHours float64 `yaml:"expected_daily_hours" json:"expected_daily_hours"`
-		StaticToken        string  `yaml:"token" json:"token"`
-		PingCode           struct {
+		// 通过 PingCode 网页 API 获取工时；数据源配置只在 conf/config.yml。
+		PingCode struct {
 			BaseURL    string `yaml:"base_url" json:"base_url"`
 			Username   string `yaml:"username" json:"username"`
 			Password   string `yaml:"password" json:"password"`
 			TimeoutSec int    `yaml:"timeout_sec" json:"timeout_sec"`
 		} `yaml:"pingcode" json:"pingcode"`
-		MySQL struct {
-			DSN        string `yaml:"dsn" json:"dsn"`
-			EmployeeNo string `yaml:"employee_no" json:"employee_no"`
-			QueryFile  string `yaml:"query_file" json:"query_file"`
-			Query      string `yaml:"query" json:"query"`
-			TimeoutSec int    `yaml:"timeout_sec" json:"timeout_sec"`
-		} `yaml:"mysql" json:"mysql"`
 	} `yaml:"worktime" json:"worktime"`
 	Log struct {
 		Level  string `yaml:"level" json:"level"`
@@ -67,7 +55,6 @@ type App struct {
 	settings   *SettingsStore
 	restart    func()
 	client     *http.Client
-	worktimeDB *sql.DB // 工时查询（公司 PingCode MySQL）
 
 	aiMu      sync.Mutex
 	aiCached  []byte
@@ -256,7 +243,7 @@ func (a *App) authorize(next http.HandlerFunc) http.HandlerFunc {
 		if got == "" {
 			got = r.Header.Get("X-Token")
 		}
-		if !a.tokenAllowed(got) && !(r.URL.Path == "/worktime/summary" && a.cfg.Worktime.StaticToken != "" && got == a.cfg.Worktime.StaticToken) {
+		if !a.tokenAllowed(got) {
 			jsonReply(w, http.StatusUnauthorized, map[string]any{"code": 1001, "message": "unauthorized"})
 			return
 		}
@@ -312,135 +299,7 @@ func parseYearMonth(r *http.Request) (int, time.Month, error) {
 	return year, month, nil
 }
 
-/* ---------- 工时：优先代理上游，其次 PingCode 网页 API，最后 MySQL ---------- */
-
-func (a *App) worktimeSQL() (string, error) {
-	if a.cfg.Worktime.MySQL.Query != "" {
-		return a.cfg.Worktime.MySQL.Query, nil
-	}
-	return "", fmt.Errorf("未配置工时 SQL 查询模板")
-}
-
-// 渲染 SQL 模板：可用 {{.Year}} {{.Month}} {{.EmployeeNo}} {{.Start}} {{.End}}
-func (a *App) renderWorktimeSQL(year int, month time.Month) (string, error) {
-	raw, err := a.worktimeSQL()
-	if err != nil {
-		return "", err
-	}
-	start := time.Date(year, month, 1, 0, 0, 0, 0, time.Local)
-	end := time.Date(year, month+1, 0, 0, 0, 0, 0, time.Local)
-	t, err := template.New("worktime").Parse(raw)
-	if err != nil {
-		return "", fmt.Errorf("解析工时 SQL 模板失败：%w", err)
-	}
-	var buf strings.Builder
-	err = t.Execute(&buf, map[string]any{
-		"Year":       year,
-		"Month":      int(month),
-		"EmployeeNo": a.cfg.Worktime.MySQL.EmployeeNo,
-		"Start":      start.Format("2006-01-02"),
-		"End":        end.Format("2006-01-02"),
-	})
-	if err != nil {
-		return "", err
-	}
-	return buf.String(), nil
-}
-
-func columnIndex(cols []string, names ...string) int {
-	for _, n := range names {
-		for i, c := range cols {
-			if strings.EqualFold(c, n) {
-				return i
-			}
-		}
-	}
-	return -1
-}
-
-// 执行 SQL：期望返回日期列 + 工时列（列名见 columnIndex），多余列忽略
-func (a *App) queryWorktime(ctx context.Context, year int, month time.Month) ([]map[string]any, float64, error) {
-	if a.worktimeDB == nil {
-		return nil, 0, errors.New("worktime.mysql.dsn 未配置")
-	}
-	sqlText, err := a.renderWorktimeSQL(year, month)
-	if err != nil {
-		return nil, 0, err
-	}
-	timeout := time.Duration(a.cfg.Worktime.MySQL.TimeoutSec) * time.Second
-	if timeout <= 0 {
-		timeout = 10 * time.Second
-	}
-	qctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	rows, err := a.worktimeDB.QueryContext(qctx, sqlText)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer rows.Close()
-	cols, err := rows.Columns()
-	if err != nil {
-		return nil, 0, err
-	}
-	di := columnIndex(cols, "date", "work_date", "day", "workday", "dt")
-	hi := columnIndex(cols, "hours", "work_hours", "duration", "worktime", "hours_recorded")
-	if di < 0 || hi < 0 {
-		if len(cols) < 2 {
-			return nil, 0, fmt.Errorf("SQL 至少要返回两列（日期、工时），实际列：%v", cols)
-		}
-		di, hi = 0, 1
-	}
-	days := make([]map[string]any, 0)
-	total := 0.0
-	vals := make([]any, len(cols))
-	ptrs := make([]any, len(cols))
-	for i := range vals {
-		ptrs[i] = &vals[i]
-	}
-	for rows.Next() {
-		if err := rows.Scan(ptrs...); err != nil {
-			return nil, 0, err
-		}
-		dateStr := fmt.Sprintf("%v", vals[di])
-		hours := toFloat(vals[hi])
-		day := 0
-		if len(dateStr) >= 10 {
-			fmt.Sscanf(dateStr[8:10], "%d", &day)
-			dateStr = dateStr[:10]
-		}
-		days = append(days, map[string]any{"date": dateStr, "day": day, "hours": hours, "recorded_hours": hours})
-		total += hours
-	}
-	if err := rows.Err(); err != nil {
-		return nil, 0, err
-	}
-	return days, total, nil
-}
-
-func toFloat(v any) float64 {
-	switch t := v.(type) {
-	case nil:
-		return 0
-	case float64:
-		return t
-	case float32:
-		return float64(t)
-	case int64:
-		return float64(t)
-	case int:
-		return float64(t)
-	case []byte:
-		f, _ := strconv.ParseFloat(string(t), 64)
-		return f
-	case string:
-		f, _ := strconv.ParseFloat(t, 64)
-		return f
-	case time.Time:
-		return 0
-	}
-	f, _ := strconv.ParseFloat(fmt.Sprintf("%v", v), 64)
-	return f
-}
+/* ---------- 工时：优先代理上游，其次 PingCode 网页 API ---------- */
 
 // 单日法定工作日表（接口节日不可用时的回落口径），与固件保持一致。
 // 2025-2026 为国务院发布的放假安排转写；2027 起由 timor.tech 整年接口自动覆盖。
@@ -492,12 +351,10 @@ func cnWorkdayAt(t time.Time) bool {
 	return wd != time.Saturday && wd != time.Sunday
 }
 
-// expectedHours 为当月应收工时 = 法定工作日 × 每日标准工时。
+// expectedHours 为当月应收工时 = 法定工作日 × 8 小时（每日标准工时固定，不做配置）。
 // 节假日来源优先级：timor.tech 整年接口（按年缓存 7 天）→ 内置表 → 自然周末。
-func (a *App) expectedHours(ctx context.Context, year int, month time.Month, daily float64) float64 {
-	if daily <= 0 {
-		daily = 8
-	}
+func (a *App) expectedHours(ctx context.Context, year int, month time.Month) float64 {
+	const daily = 8.0
 	hy := a.holidayYearFor(ctx, year)
 	days := time.Date(year, month+1, 0, 0, 0, 0, 0, time.Local).Day()
 	total := 0.0
@@ -517,7 +374,7 @@ func (a *App) expectedHours(ctx context.Context, year int, month time.Month, dai
 }
 
 // GET /worktime/summary?year=&month=
-// 数据来源优先级：DESKWONG_WORKTIME_UPSTREAM 代理 → PingCode 网页 API → 公司 MySQL
+// 数据来源优先级：DESKWONG_WORKTIME_UPSTREAM 代理 → PingCode 网页 API
 func (a *App) worktime(w http.ResponseWriter, r *http.Request) {
 	if upstream := os.Getenv("DESKWONG_WORKTIME_UPSTREAM"); upstream != "" {
 		if a.proxyJSON(w, r, upstream) {
@@ -539,28 +396,14 @@ func (a *App) worktime(w http.ResponseWriter, r *http.Request) {
 		jsonReply(w, 200, map[string]any{"code": 0, "message": "ok", "data": map[string]any{
 			"year": year, "month": int(month), "days": days,
 			"total_recorded_hours": total,
-			"total_expected_hours": a.expectedHours(r.Context(), year, month, a.cfg.Worktime.ExpectedDailyHours),
+			"total_expected_hours": a.expectedHours(r.Context(), year, month),
 		}})
 		return
 	}
-	if a.worktimeDB == nil {
-		jsonReply(w, http.StatusNotImplemented, map[string]any{
-			"code":    2004,
-			"message": "工时数据源未配置：请在服务后台 /admin 填写 PingCode 账号密码、MySQL DSN/工号，或设置 DESKWONG_WORKTIME_UPSTREAM",
-		})
-		return
-	}
-	days, total, err := a.queryWorktime(r.Context(), year, month)
-	if err != nil {
-		slog.Warn("worktime query failed", "error", err)
-		jsonReply(w, http.StatusServiceUnavailable, map[string]any{"code": 2006, "message": err.Error()})
-		return
-	}
-	jsonReply(w, 200, map[string]any{"code": 0, "message": "ok", "data": map[string]any{
-		"year": year, "month": int(month), "days": days,
-		"total_recorded_hours": total,
-		"total_expected_hours": a.expectedHours(r.Context(), year, month, a.cfg.Worktime.ExpectedDailyHours),
-	}})
+	jsonReply(w, http.StatusNotImplemented, map[string]any{
+		"code":    2004,
+		"message": "工时数据源未配置：请在 conf/config.yml 配置 worktime.pingcode，或设置 DESKWONG_WORKTIME_UPSTREAM",
+	})
 }
 
 func unixTime(v any) int64 {
@@ -788,18 +631,13 @@ func main() {
 		if cfg.Server.Password == "" {
 			cfg.Server.Password = "admin"
 		}
-		// PingCode / MySQL 凭据只以 config.yml 为权威源（不在 /admin 编辑）：
+		// PingCode 凭据只以 config.yml 为权威源（不在 /admin 编辑）：
 		// 每次启动或保存重载时用 config.yml 覆盖 SQLite 中的历史 seed 值。
 		pc := seed.Worktime.PingCode
 		if pc.TimeoutSec <= 0 {
 			pc.TimeoutSec = 20
 		}
 		cfg.Worktime.PingCode = pc
-		my := seed.Worktime.MySQL
-		if my.TimeoutSec <= 0 {
-			my.TimeoutSec = 10
-		}
-		cfg.Worktime.MySQL = my
 		setupLogger(cfg)
 		if err := runService(ctx, cfg, store); err != nil {
 			slog.Error("service", "error", err)
@@ -812,19 +650,6 @@ func runService(parent context.Context, cfg Config, store *SettingsStore) error 
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	app := &App{cfg: cfg, settings: store, restart: cancel, client: &http.Client{Timeout: 12 * time.Second}}
-	if cfg.Worktime.MySQL.DSN != "" {
-		wdb, err := sql.Open("mysql", cfg.Worktime.MySQL.DSN)
-		if err != nil {
-			slog.Error("worktime mysql", "error", err)
-			return err
-		}
-		wdb.SetMaxOpenConns(4)
-		wdb.SetMaxIdleConns(1)
-		wdb.SetConnMaxLifetime(30 * time.Minute)
-		app.worktimeDB = wdb
-		defer wdb.Close()
-		slog.Info("worktime mysql configured", "employee", cfg.Worktime.MySQL.EmployeeNo)
-	}
 
 	mux := http.NewServeMux()
 	app.registerAdmin(mux)

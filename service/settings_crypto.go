@@ -88,8 +88,8 @@ func (c *settingsCipher) decrypt(value string) (string, error) {
 
 func cryptConfig(cfg Config, c *settingsCipher, encrypt bool) (Config, error) {
 	fields := []*string{
-		&cfg.Server.Token, &cfg.Server.Password, &cfg.Worktime.StaticToken,
-		&cfg.Worktime.PingCode.Password, &cfg.Worktime.MySQL.DSN,
+		&cfg.Server.Token, &cfg.Server.Password,
+		&cfg.Worktime.PingCode.Password,
 	}
 	for _, field := range fields {
 		var err error

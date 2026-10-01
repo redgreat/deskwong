@@ -89,13 +89,9 @@ func TestWorktimeExpectedHours(t *testing.T) {
 		{2026, time.February, 128},  // 春节 2/15-2/23 放假、2/14 与 2/28 调休 → 16 个工作日
 	}
 	for _, c := range cases {
-		if got := app.expectedHours(ctx, c.year, c.month, 8); got != c.want {
-			t.Errorf("expectedHours(%d, %d, 8) = %v, want %v", c.year, c.month, got, c.want)
+		if got := app.expectedHours(ctx, c.year, c.month); got != c.want {
+			t.Errorf("expectedHours(%d, %d) = %v, want %v", c.year, c.month, got, c.want)
 		}
-	}
-	// 未配置每日工时时按 8 小时兜底
-	if got := app.expectedHours(ctx, 2026, time.March, 0); got != 176 {
-		t.Errorf("expectedHours with default daily = %v, want 176", got)
 	}
 	// 调休上班的周末要计入，法定节假日要排除
 	if !cnWorkdayAt(time.Date(2026, 10, 10, 0, 0, 0, 0, time.Local)) {
@@ -108,7 +104,7 @@ func TestWorktimeExpectedHours(t *testing.T) {
 	offline := &App{client: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return nil, errNoNetwork
 	})}}
-	if got := offline.expectedHours(ctx, 2026, time.October, 8); got != 144 {
+	if got := offline.expectedHours(ctx, 2026, time.October); got != 144 {
 		t.Errorf("offline expectedHours(2026, 10) = %v, want 144", got)
 	}
 	// 整年接口：解析放假与调休集合，错误路径不 panic
@@ -140,10 +136,10 @@ func TestWorktimeExpectedHours(t *testing.T) {
 	t.Setenv("DESKWONG_HOLIDAY_API_BASE", stub.URL)
 	// 2031-01-01 是周三：接口标记放假 → 不算工作日；01-03 是周五：接口标记调休 → 仍然算工作日。
 	// 该月自然工作日 23 天，仅 1/1 被接口放假剔除 → 22 天 × 8 = 176。
-	if got := remote.expectedHours(ctx, 2031, time.January, 8); got != 176 {
+	if got := remote.expectedHours(ctx, 2031, time.January); got != 176 {
 		t.Errorf("remote expectedHours(2031, 1) = %v, want 176", got)
 	}
-	if got := remote.expectedHours(ctx, 2031, time.January, 8); got != 176 || calls != 1 {
+	if got := remote.expectedHours(ctx, 2031, time.January); got != 176 || calls != 1 {
 		t.Errorf("holiday year must be cached: got=%v calls=%d", got, calls)
 	}
 }
