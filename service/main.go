@@ -788,6 +788,18 @@ func main() {
 		if cfg.Server.Password == "" {
 			cfg.Server.Password = "admin"
 		}
+		// PingCode / MySQL 凭据只以 config.yml 为权威源（不在 /admin 编辑）：
+		// 每次启动或保存重载时用 config.yml 覆盖 SQLite 中的历史 seed 值。
+		pc := seed.Worktime.PingCode
+		if pc.TimeoutSec <= 0 {
+			pc.TimeoutSec = 20
+		}
+		cfg.Worktime.PingCode = pc
+		my := seed.Worktime.MySQL
+		if my.TimeoutSec <= 0 {
+			my.TimeoutSec = 10
+		}
+		cfg.Worktime.MySQL = my
 		setupLogger(cfg)
 		if err := runService(ctx, cfg, store); err != nil {
 			slog.Error("service", "error", err)
