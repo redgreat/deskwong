@@ -255,9 +255,6 @@ void main_screen_init(int width, int height) {
         s_lunar[i] = label(s_cell[i], "", &lv_font_zh_10, 0, 20, 41);
         lv_obj_set_style_text_align(s_lunar[i], LV_TEXT_ALIGN_CENTER, 0);
         s_track[i] = meter(s_cell[i], 6, 31, 29, 4, &s_fill[i]);
-        /* 填充条上下各留 1px 轨道底色：今天（黑底反显）满格时也能看到白色包边，不至于融进黑底 */
-        lv_obj_set_y(s_fill[i], 1);
-        lv_obj_set_height(s_fill[i], 2);
         lv_obj_add_flag(s_cell[i], LV_OBJ_FLAG_HIDDEN);
     }
     box(scr, 307, 41, 1, height-47, true);
@@ -336,12 +333,13 @@ void main_screen_update_calendar(const calendar_cell_t cells[42]) {
         lv_color_t fg = c->is_today ? lv_color_white() : lv_color_black();
         lv_obj_set_style_bg_color(s_cell[i], c->is_today ? lv_color_black() : lv_color_white(), 0);
         lv_obj_set_style_text_color(s_day[i], fg, 0); lv_obj_set_style_text_color(s_lunar[i], fg, 0);
-        /* 进度条不随今天反显：轨道恒为白底黑虚点，填充恒为黑色。
-         * 今天黑底单元格上白色轨道本身醒目，黑色填充（带 1px 白色包边）对比清晰，
-         * 解决黑底反显时进度条看不清的问题；非今天白轨道融于白格，效果与原设计一致。 */
-        lv_obj_set_style_bg_color(s_track[i], lv_color_white(), 0);
-        lv_obj_set_style_text_color(s_track[i], lv_color_black(), 0);
-        lv_obj_set_style_bg_color(s_fill[i], lv_color_black(), 0);
+        /* 进度条随当天反显，已记录时全高实心填充（盖满两排虚点）：
+         * 非今天 = 白轨黑虚点 + 黑色实心条；今天黑底格 = 黑轨白虚点 + 白色实心条，
+         * 黑底上白色实心条对比最强，满格整条为白也不会融进黑底。
+         * 未记录时显示两排虚点轨道；超过 8 小时封顶满格。 */
+        lv_obj_set_style_bg_color(s_track[i], c->is_today ? lv_color_black() : lv_color_white(), 0);
+        lv_obj_set_style_text_color(s_track[i], fg, 0);
+        lv_obj_set_style_bg_color(s_fill[i], fg, 0);
         lv_obj_set_style_border_color(s_cell[i], lv_color_black(), 0);
         lv_obj_set_style_border_width(s_cell[i], !c->is_today && c->type == CAL_HOLIDAY ? 1 : 0, 0);
         /* 节假日有 1px 边框，日期数字下移 1px 与上边框留出间距 */
