@@ -20,6 +20,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # Get release notes 需要完整历史和 tag 来生成 commit 列表
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -97,14 +99,15 @@ jobs:
         id: notes
         shell: bash
         run: |
+          echo "notes<<EOF" >> "$GITHUB_OUTPUT"
           prev_tag=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
           if [ -n "$prev_tag" ]; then
-            echo "notes<<EOF" >> "$GITHUB_OUTPUT"
-            git log --pretty=format:"- %s" ${prev_tag}..HEAD >> "$GITHUB_OUTPUT"
-            echo "" >> "$GITHUB_OUTPUT"
+            git log --pretty=format:"- %s" "${prev_tag}..HEAD" >> "$GITHUB_OUTPUT"
           else
-            echo "notes=$(git log -1 --pretty=%B)" >> "$GITHUB_OUTPUT"
+            git log --pretty=format:"- %s" -10 >> "$GITHUB_OUTPUT"
           fi
+          echo "" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
