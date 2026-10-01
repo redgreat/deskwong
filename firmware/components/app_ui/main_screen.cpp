@@ -7,7 +7,10 @@
 #include <math.h>
 #include <time.h>
 
-static lv_obj_t *s_time, *s_year, *s_month, *s_total, *s_status, *s_race_check, *s_points;
+static lv_obj_t *s_time, *s_year, *s_month, *s_status, *s_race_check, *s_points;
+/* 工时摘要：数字行（已记/应记）+ 下方细条，右侧百分比胶囊。
+ * 数字用 digits_18（与日期格一致），百分比用反白圆角胶囊（与状态栏 IP 胶囊呼应）。 */
+static lv_obj_t *s_total_num, *s_total_capsule, *s_total_pct_text;
 static lv_obj_t *s_lunar_full, *s_weather, *s_temperature, *s_humidity, *s_weather_image, *s_bell, *s_ai[2], *s_remind;
 static lv_obj_t *s_cell[42], *s_day[42], *s_lunar[42], *s_track[42], *s_fill[42];
 static lv_obj_t *s_summary_fill, *s_ai_fill[2];
@@ -82,6 +85,35 @@ static lv_obj_t *label(lv_obj_t *p, const char *text, const lv_font_t *font, int
     if (w) { lv_obj_set_width(o, w); lv_label_set_long_mode(o, LV_LABEL_LONG_CLIP); }
     return o;
 }
+/* 百分比胶囊：黑底圆角，只包住“36%”数字，与 IP 胶囊呼应 */
+static lv_obj_t *capsule(lv_obj_t *p, const char *text, const lv_font_t *font, int x, int y) {
+    lv_obj_t *o = lv_obj_create(p);
+    lv_obj_remove_style_all(o);
+    lv_obj_set_pos(o, x, y);
+    lv_obj_set_style_bg_color(o, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(o, 8, 0);
+    lv_obj_clear_flag(o, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *t = lv_label_create(o);
+    lv_obj_remove_style_all(t);
+    lv_obj_set_style_text_font(t, font, 0);
+    lv_obj_set_style_text_color(t, lv_color_white(), 0);
+    lv_label_set_text(t, text);
+    lv_obj_align(t, LV_ALIGN_CENTER, 0, 0);
+    return o;
+}
+/* 胶囊宽度跟随百分比文字：数字撑开 + 左右各 6 像素内边距，右边缘固定 */
+static void capsule_refresh(lv_obj_t *capsule_box, lv_obj_t *text, const char *v, int right_edge, int h) {
+    if (!capsule_box || !text || !v) return;
+    if (strcmp(lv_label_get_text(text), v)) lv_label_set_text(text, v);
+    lv_obj_update_layout(text);
+    int w = (int)lv_obj_get_width(text) + 12;
+    if (w < 26) w = 26;
+    lv_obj_set_size(capsule_box, w, h);
+    int x = right_edge - w;
+    lv_obj_set_x(capsule_box, x < 0 ? 0 : x);
+}
+
 static void draw_dots(lv_event_t *e) {
     lv_obj_t *o = lv_event_get_target(e);
     lv_area_t a; lv_obj_get_coords(o, &a);
@@ -202,8 +234,13 @@ void main_screen_init(int width, int height) {
     s_month = label(scr, "--", &lv_font_digits_36, 92, 37, 42);
     lv_obj_set_style_text_align(s_month, LV_TEXT_ALIGN_CENTER, 0);
     label(scr, "月", &lv_font_zh_14, 136, 53);
-    s_total = label(scr, "0/0 0%", &lv_font_digits_18, 163, 44, 136);
-    lv_obj_set_style_text_align(s_total, LV_TEXT_ALIGN_RIGHT, 0);
+    /* 本月工时：左侧「已记/应记」数字行（digits_18，与下方进度条左对齐 x=180），右侧反白圆角百分比胶囊 */
+    s_total_num = label(scr, "0/0", &lv_font_digits_18, 180, 44, 80);
+    lv_obj_set_style_text_align(s_total_num, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_t *capsule_box = capsule(scr, "0%", &lv_font_montserrat_14, 241, 44);
+    s_total_capsule = capsule_box;
+    s_total_pct_text = lv_obj_get_child(capsule_box, 0);
+    capsule_refresh(s_total_capsule, s_total_pct_text, "0%", 299, 20);
     meter(scr, 180, 64, 119, 5, &s_summary_fill);
     const char *wh[] = {"一", "二", "三", "四", "五", "六", "日"};
     for (int i = 0; i < 7; ++i) {
@@ -311,14 +348,17 @@ void main_screen_update_summary(float recorded, float expected, const char *weat
                                 const ai_provider_t *ai5h, const ai_provider_t *aiweek, bool synced, int points,
                                 float indoor_temp, float indoor_humidity) {
     char b[96];
-    /* 本月工时占比：没有记录就是 0，没拿到“应记录”也不显示 -- */
+    /* 本月工时：没有记录就是 0，没拿到"应记录"也不显示 --。
+     * 左侧纯数字行（已记/应记），右侧反白圆角胶囊只装百分比，下面细条同步进度。 */
     float shown_recorded = isfinite(recorded) && recorded > 0 ? recorded : 0;
     float shown_expected = isfinite(expected) && expected > 0 ? expected : 0;
     float percent = shown_expected > 0 ? shown_recorded / shown_expected * 100.0f : 0;
     if (!isfinite(percent) || percent < 0) percent = 0;
     if (percent > 999) percent = 999;
-    snprintf(b, sizeof(b), "%.0f/%.0f %.0f%%", shown_recorded, shown_expected, percent);
-    text_changed(s_total, b);
+    snprintf(b, sizeof(b), "%.0f/%.0f", shown_recorded, shown_expected);
+    text_changed(s_total_num, b);
+    snprintf(b, sizeof(b), "%.0f%%", percent);
+    capsule_refresh(s_total_capsule, s_total_pct_text, b, 299, 20);
     set_meter(s_summary_fill, percent, 119);
     if (synced && !s_offline) lv_obj_clear_flag(s_race_check, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(s_race_check, LV_OBJ_FLAG_HIDDEN);
