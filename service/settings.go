@@ -248,7 +248,9 @@ func (a *App) registerAdmin(mux *http.ServeMux) {
 			jsonReply(w, 500, map[string]any{"message": "写入 SQLite 失败，配置未保存"})
 			return
 		}
-		jsonReply(w, 200, map[string]any{"message": "已保存到 SQLite，重启服务后生效", "restart_required": true})
+		jsonReply(w, 200, map[string]any{"message": "已保存并自动生效（如账号密码变更，请用新凭据重新登录）", "restart_required": false})
+		// 保存成功后自动重载配置，无需手动点“重启服务”
+		time.AfterFunc(300*time.Millisecond, a.restart)
 	}))
 	mux.HandleFunc("POST /api/restart", a.adminAuth(func(w http.ResponseWriter, r *http.Request) {
 		jsonReply(w, 200, map[string]any{"message": "服务正在重启；如更改了账号或密码，请用新账号密码重新登录"})

@@ -9,7 +9,7 @@ RaceBox 由设备直接上传到 MQTT Broker；本服务不再订阅 RaceBox 或
 首次启动将 `conf/config.yml` 导入 `/app/data/settings.sqlite`；以后以 SQLite 为准。
 页面可修改每日标准工时、工时 Token 和管理账号密码；PingCode 域名与账号密码只在 `conf/config.yml` 的
 `worktime.pingcode` 配置，不在页面编辑。监听地址与设备访问 Token 在 conf/config.yml 中固定。
-点击“保存配置”后只写入 SQLite，点击“重启服务”才应用；无需重建镜像或刷固件。
+点击“保存配置”后写入 SQLite 并自动重载生效，无需手动重启；修改 `conf/config.yml` 后点“重启服务”或重启容器生效。
 管理密码与 Token 不明文回显；`******` 保留原值。工时 Token 留空则使用服务 Token。
 
 敏感字段在写入 SQLite 前使用 AES-256-GCM 独立随机 nonce 加密。生产环境建议通过
