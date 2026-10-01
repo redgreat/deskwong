@@ -12,7 +12,6 @@ permissions:
 
 env:
   GHCR_IMAGE: ghcr.io/${{ github.repository }}
-  QUAY_IMAGE: quay.io/${{ vars.QUAY_REPOSITORY || 'redgreat/deskwong' }}
 
 jobs:
   build-push:
@@ -49,13 +48,23 @@ jobs:
           username: ${{ secrets.QUAY_USERNAME }}
           password: ${{ secrets.QUAY_PASSWORD }}
 
+      - name: Resolve Quay image
+        id: quay
+        shell: bash
+        env:
+          QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
+        run: |
+          namespace="${QUAY_USERNAME%%+*}"
+          test -n "$namespace"
+          echo "image=quay.io/$namespace/deskwong" >> "$GITHUB_OUTPUT"
+
       - name: Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: |
             ${{ env.GHCR_IMAGE }}
-            ${{ env.QUAY_IMAGE }}
+            ${{ steps.quay.outputs.image }}
           tags: |
             type=ref,event=tag
             type=semver,pattern={{version}}
