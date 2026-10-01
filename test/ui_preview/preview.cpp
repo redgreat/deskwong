@@ -63,8 +63,8 @@ int main(int argc,char **argv) {
     main_screen_update_summary(empty?0:64,empty?0:72,empty?NULL:"晴\n26C / 58%",empty?0:argc>4?atoi(argv[4]):100,lunar,empty?NULL:&five,empty?NULL:&weekly,!empty,empty?0:12800,empty?NAN:24.0f,empty?NAN:52.0f);
     sync_screen_init(400,300);
     if (argc>3 && strcmp(argv[3],"sync")==0) {
-        racebox_progress_t p={};p.state=RACEBOX_FAILED;p.received=750;p.total=753;p.download_done=true;p.percent=0;p.elapsed_seconds=23;
-        strcpy(p.device,"RaceBox Mini S 2254300997");strcpy(p.message,"下载完成，MQTT 未连接");
+        racebox_progress_t p={};p.state=RACEBOX_UPLOADING;p.received=750;p.total=753;p.uploaded=612;p.download_done=true;p.percent=81;p.elapsed_seconds=23;p.speed_kbps_x10=326;
+        strcpy(p.device,"RaceBox Mini S 2254300997");strcpy(p.message,"正在上传到服务器");
         sync_screen_update(&p);sync_screen_show();
     }
     save(argc>1?argv[1]:"preview.pgm");

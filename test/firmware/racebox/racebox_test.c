@@ -1,5 +1,5 @@
 #include <assert.h>
-#include "../../firmware/components/app_services/racebox_service.c"
+#include "../../../firmware/components/app_services/racebox_service.c"
 static int stopped, publish_calls, fail_on_call;
 static uint32_t published_session_index[8], published_session_total[8];
 static bool connected;

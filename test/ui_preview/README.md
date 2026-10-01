@@ -5,11 +5,12 @@ flush 采用与固件相同的 RGB565 → 黑白阈值，不重新实现一份�
 工时、天气、额度和 RaceBox 数量为演示数据，农历由真实服务计算。
 
 ```powershell
-cmake -S tools/ui_preview -B build/ui_preview -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake -S test/ui_preview -B build/ui_preview -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build/ui_preview --target ui_preview -j 8
-build/ui_preview/ui_preview.exe build/ui-preview.pgm
-build/ui_preview/ui_preview.exe build/ui-preview-six.pgm 3
-build/ui_preview/ui_preview.exe build/ui-preview-empty.pgm 9 empty
+build/ui_preview/ui_preview.exe build/main-screen.pgm
+build/ui_preview/ui_preview.exe build/main-screen-six-row.pgm 3
+build/ui_preview/ui_preview.exe build/main-screen-empty.pgm 9 empty
+build/ui_preview/ui_preview.exe build/racebox-sync.pgm 9 sync
 ```
 
 需要 C/C++ 编译器、CMake、Ninja。输出为 400×300 PGM；可用 Pillow 转 PNG。

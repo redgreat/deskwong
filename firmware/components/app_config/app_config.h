@@ -51,7 +51,7 @@ typedef struct {
     uint8_t remind_worktime_hh;           // 17
     uint8_t remind_worktime_mm;           // 00
     bool remind_enabled;
-    /* 语音（小智 xiaozhi-esp32）——见 doc/plan/09 */
+    /* 语音（小智 xiaozhi-esp32）——见 doc/REQUIREMENTS.md */
     bool voice_enabled;                   // 总开关
     char voice_wake_word[32];             // 唤醒词
     char voice_server_url[CFG_URL_MAX];   // 小智服务端 WebSocket 地址

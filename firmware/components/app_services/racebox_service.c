@@ -233,7 +233,7 @@ static void decode_record(const uint8_t *p, racebox_record_t *r) {
 }
 
 
-/* UBX 风格命令（见 doc/rules/04 §2.2，来自 racewong） */
+/* UBX 风格命令（见 doc/SPECIFICATIONS.md §3，来自 racewong） */
 static const uint8_t CMD_DOWNLOAD[] = {0xB5, 0x62, 0xFF, 0x23, 0x00, 0x00, 0x22, 0x65};
 static const uint8_t CMD_ERASE[] = {0xB5, 0x62, 0xFF, 0x24, 0x00, 0x00, 0x23, 0x68};
 

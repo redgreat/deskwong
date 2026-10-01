@@ -1,6 +1,6 @@
 /* RaceBox BLE 客户端（NimBLE 中央）
  * 连接 Nordic UART 服务（NUS），读写 UBX 命令
- * 协议见 doc/rules/04 §2.2 */
+ * 协议见 doc/SPECIFICATIONS.md §3 */
 #include <string.h>
 #include <strings.h>
 #include <stdio.h>
