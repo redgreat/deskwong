@@ -12,10 +12,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"text/template"
 	"time"
 
-	mysql "github.com/go-sql-driver/mysql"
 	_ "modernc.org/sqlite"
 )
 
@@ -45,12 +43,6 @@ func openSettings(path string, seed Config) (*SettingsStore, error) {
 			db.Close()
 			return nil, err
 		}
-	}
-	if seed.Worktime.ExpectedDailyHours <= 0 {
-		seed.Worktime.ExpectedDailyHours = 8
-	}
-	if seed.Worktime.MySQL.TimeoutSec <= 0 {
-		seed.Worktime.MySQL.TimeoutSec = 10
 	}
 	if seed.Worktime.PingCode.TimeoutSec <= 0 {
 		seed.Worktime.PingCode.TimeoutSec = 20
@@ -133,12 +125,6 @@ func validateSettings(cfg Config) error {
 	if strings.TrimSpace(cfg.Server.Password) == "" {
 		return errors.New("管理密码不能为空")
 	}
-	if cfg.Worktime.ExpectedDailyHours <= 0 || cfg.Worktime.ExpectedDailyHours > 24 {
-		return errors.New("每日工时须大于 0 且不超过 24")
-	}
-	if cfg.Worktime.MySQL.TimeoutSec < 1 || cfg.Worktime.MySQL.TimeoutSec > 120 {
-		return errors.New("查询超时须为 1–120 秒")
-	}
 	if cfg.Worktime.PingCode.TimeoutSec < 1 || cfg.Worktime.PingCode.TimeoutSec > 120 {
 		return errors.New("PingCode 超时须为 1–120 秒")
 	}
@@ -150,14 +136,6 @@ func validateSettings(cfg Config) error {
 		if cfg.Worktime.PingCode.Username == "" || cfg.Worktime.PingCode.Password == "" {
 			return errors.New("启用 PingCode 时账号和密码不能为空")
 		}
-	}
-	if cfg.Worktime.MySQL.DSN != "" {
-		if _, err := mysql.ParseDSN(cfg.Worktime.MySQL.DSN); err != nil {
-			return errors.New("MySQL DSN 格式无效")
-		}
-	}
-	if _, err := template.New("worktime").Parse(cfg.Worktime.MySQL.Query); err != nil {
-		return errors.New("SQL 模板语法无效")
 	}
 	return nil
 }
@@ -194,12 +172,6 @@ func (a *App) registerAdmin(mux *http.ServeMux) {
 		if cfg.Server.Password != "" {
 			cfg.Server.Password = "******"
 		}
-		if cfg.Worktime.StaticToken != "" {
-			cfg.Worktime.StaticToken = "******"
-		}
-		if cfg.Worktime.MySQL.DSN != "" {
-			cfg.Worktime.MySQL.DSN = "******"
-		}
 		if cfg.Worktime.PingCode.Password != "" {
 			cfg.Worktime.PingCode.Password = "******"
 		}
@@ -229,12 +201,6 @@ func (a *App) registerAdmin(mux *http.ServeMux) {
 		}
 		if cfg.Server.Password == "******" || cfg.Server.Password == "" {
 			cfg.Server.Password = old.Server.Password
-		}
-		if cfg.Worktime.StaticToken == "******" {
-			cfg.Worktime.StaticToken = old.Worktime.StaticToken
-		}
-		if cfg.Worktime.MySQL.DSN == "******" {
-			cfg.Worktime.MySQL.DSN = old.Worktime.MySQL.DSN
 		}
 		if cfg.Worktime.PingCode.Password == "******" {
 			cfg.Worktime.PingCode.Password = old.Worktime.PingCode.Password

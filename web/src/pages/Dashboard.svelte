@@ -168,6 +168,7 @@
       <label>API 地址<input bind:value={cfg.worktime_api_base} placeholder="http://host/worktime" /></label>
       <p class="muted">工时数据从 PingCode 网页 API 获取，账号密码在服务端 config.yml 配置。</p>
       <label>Token（与 AI 用量相同，填服务端 server.token）<input bind:value={cfg.worktime_token} placeholder="留空不修改" /></label>
+      <label>工时获取频率（分钟）<input type="number" bind:value={cfg.worktime_refresh_minutes} min="5" max="1440" /></label>
     </section>
 
     <section>
