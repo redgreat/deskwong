@@ -61,6 +61,9 @@ static racebox_session_t *s_open_session;
 static int s_session_count;
 static volatile bool s_download_done, s_worker_active, s_cancel_upload;
 static volatile bool s_erase_pending;
+static volatile bool s_erase_phase;
+static volatile int s_erase_percent = -1;
+static int64_t s_erase_started_us;
 static bool s_bad_stream;
 static int s_today, s_sync_day;
 static volatile bool s_save_daily;
@@ -252,10 +255,11 @@ static void on_ble_disc(const char *name) {
 
 static void on_ble_scan_done(void) {
     if (s_state == RACEBOX_SCANNING) {
+        bool was_erasing = s_erase_pending || s_erase_phase;
         s_erase_pending = false;
         s_state = RACEBOX_FAILED;
         s_cancel_upload = true;
-        set_message("未发现设备");
+        set_message(was_erasing ? "上传完成，但未发现设备" : "未发现设备");
         ESP_LOGW(TAG, "no RaceBox device found");
     }
 }
@@ -271,20 +275,27 @@ static void on_ble_conn(bool connected) {
         if (rc == 0) {
             s_state = s_erase_pending ? RACEBOX_ERASING : RACEBOX_DOWNLOADING;
             s_last_activity_us = esp_timer_get_time();
+            if (s_erase_pending) {
+                s_erase_phase = true;
+                s_erase_percent = 0;
+                s_erase_started_us = s_last_activity_us;
+            }
             set_message(s_erase_pending ? "正在清理设备数据" : "等待设备发送数据");
             ESP_LOGI(TAG, "%s command sent", s_erase_pending ? "erase" : "download");
         } else {
+            bool was_erasing = s_erase_pending || s_erase_phase;
             s_state = RACEBOX_FAILED;
             s_erase_pending = false;
-            set_message("设备命令发送失败");
+            set_message(was_erasing ? "上传完成，但清理命令失败" : "设备命令发送失败");
             ESP_LOGE(TAG, "device command failed rc=%d", rc);
         }
     } else {
         if (s_state == RACEBOX_DOWNLOADING || (s_state == RACEBOX_UPLOADING && !s_download_done) ||
             s_state == RACEBOX_CONNECTING || s_state == RACEBOX_QUERYING || s_state == RACEBOX_ERASING) {
+            bool was_erasing = s_erase_pending || s_erase_phase;
             s_erase_pending = false;
             s_state = RACEBOX_FAILED;
-            set_message("连接中断");
+            set_message(was_erasing ? "上传完成，但清理连接中断" : "连接中断");
             ESP_LOGW(TAG, "disconnected during transfer");
         }
     }
@@ -303,8 +314,16 @@ static void handle_frame(const uint8_t *data, size_t len) {
      * 回调中输出串口日志会阻塞通知消费并耗尽控制器 ACL 缓冲。 */
     if (data[2] != 0xFF) return;
     if (s_state == RACEBOX_ERASING) {
-        if (data[3] == 0x02 && plen == 2 && data[6] == 0xFF && data[7] == 0x24) {
+        if (data[3] == 0x24 && plen >= 1 && len >= 9) {
+            int progress = data[6];
+            if (progress > 100) progress = 100;
+            s_erase_percent = progress;
+            s_last_activity_us = esp_timer_get_time();
+            set_message("正在清理设备内存 %d%%", progress);
+            ESP_LOGI(TAG, "erase progress=%d%%", progress);
+        } else if (data[3] == 0x02 && plen == 2 && data[6] == 0xFF && data[7] == 0x24) {
             s_erase_pending = false;
+            s_erase_percent = 100;
             finish_success();
             s_state = RACEBOX_DONE;
             set_message("上传完成，设备数据已清理");
@@ -507,6 +526,9 @@ static void upload_worker(void *arg) {
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
         if (start_erase) {
             s_erase_pending=true;
+            s_erase_phase=true;
+            s_erase_percent=-1;
+            s_erase_started_us=0;
             s_state=RACEBOX_SCANNING;
             set_message("上传完成，正在连接设备清理数据");
             racebox_ble_start();
@@ -608,6 +630,7 @@ void racebox_service_trigger(void) {
     free_record_chunks();
     free_sessions();
     s_uploaded=0; s_download_done=false; s_cancel_upload=false; s_bad_stream=false; s_erase_pending=false;
+    s_erase_phase=false; s_erase_percent=-1; s_erase_started_us=0;
     s_total = 0;
     s_received = 0;
     s_rx_stream_len = 0;
@@ -635,8 +658,10 @@ racebox_state_t racebox_service_state(void) {
 
 void racebox_service_progress(racebox_progress_t *out) {
     if (!out) return;
+    int64_t now_us = esp_timer_get_time();
+    int64_t timeout_us = s_state == RACEBOX_ERASING ? 120000000LL : 30000000LL;
     if ((s_state == RACEBOX_QUERYING || s_state == RACEBOX_DOWNLOADING || s_state == RACEBOX_ERASING) && s_last_activity_us > 0 &&
-        esp_timer_get_time() - s_last_activity_us > 30000000LL) {
+        now_us - s_last_activity_us > timeout_us) {
         bool was_querying = s_state == RACEBOX_QUERYING;
         bool was_erasing = s_state == RACEBOX_ERASING;
         s_state = RACEBOX_FAILED;
@@ -653,6 +678,10 @@ void racebox_service_progress(racebox_progress_t *out) {
         ? (int)((int64_t)s_received * RACEBOX_RAW_RECORD_SIZE * 10 /
                 ((int64_t)out->elapsed_seconds * 1024)) : 0;
     out->download_done=s_download_done;
+    out->erase_phase=s_erase_phase;
+    out->erase_percent=s_erase_percent;
+    out->erase_elapsed_seconds=s_erase_started_us > 0
+        ? (int)((now_us-s_erase_started_us)/1000000LL) : 0;
     out->state = s_state;
     out->total = s_total;
     out->received = s_received;
