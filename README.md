@@ -2,16 +2,16 @@
 
 微雪 **ESP32-S3-RLCD-4.2**（全反射屏）桌面摆件固件：电子日历、天气/温湿度、工时统计与本地提醒、RaceBox 轨迹经 MQTT 采集上传、AI 用量展示、Svelte 配置后台。
 
-> 需求与实施计划见 [`doc/`](doc/)（先读 `doc/AI_RULES.md` 与 `doc/plan/00-总计划与路线图.md`）。
+> 文档从 [`doc/AI_RULES.md`](doc/AI_RULES.md) 开始；整体需求、架构、规范和计划均为单文件事实来源。
 
 ## 目录结构
 
 ```
 deskwong/
-├── doc/          # 需求规则（rules/）与实施计划（plan/）
+├── doc/          # AI 入口、整体需求、架构、协议规范与计划
 ├── firmware/     # ESP-IDF v5.5.1 固件（main/ + components/）
 ├── web/          # Svelte 配置后台前端（Vite 构建）
-├── mock/         # 外部服务 mock（工时/AI用量/天气）
+├── test/         # 服务、固件与 UI 真实渲染测试
 ├── tools/        # 刷机脚本（flash.bat / make_spiffs.bat）
 └── README.md
 ```
@@ -89,16 +89,14 @@ python -m esptool --chip esp32s3 -b 460800 -p COM3 write_flash ^
 
 | 接口 | 契约 | 文档 |
 | --- | --- | --- |
-| 工时 API | `GET {base}/worktime/summary?year=&month=`，Bearer Token | `doc/rules/03` §2.2 |
-| AI 用量 API | `GET {base}/ai/usage`，Bearer Token | `doc/rules/05` §2.2 |
-| RaceBox MQTT | 发布到 `deskwong/racebox/data`（QoS 1） | `doc/rules/04` §2.4 |
-| 天气 | 和风天气（QWeather） | `doc/rules/00` D2 |
-
-联调期可用本地 mock：`python3 mock/mock_server.py`（`http://<电脑IP>:8000`）。
+| 工时 API | `GET {base}/worktime/summary?year=&month=`，Bearer Token | `doc/SPECIFICATIONS.md` §2.1 |
+| AI 用量 API | `GET {base}/ai/usage`，Bearer Token | `doc/SPECIFICATIONS.md` §2.2 |
+| RaceBox MQTT | 发布到 `deskwong/racebox/data`（QoS 1） | `doc/SPECIFICATIONS.md` §4 |
+| 天气 | 和风天气 / Open-Meteo | `doc/REQUIREMENTS.md` §4 |
 
 ## 开发约定
 
 - 固件框架 **ESP-IDF + LVGL 8.4**；屏幕为单色 1bpp，LVGL 全彩帧缓冲经 flush 转单色刷新。
 - 前端 **Svelte + Vite**，构建产物打入 SPIFFS 分区（`/spiffs/www/`）。
-- 需求变更直接改 `doc/rules/`，AI 按 `doc/AI_RULES.md` 路由同步 `doc/plan/`。
+- 测试统一从 `test/run.ps1` 执行；测试源、桩和预览工具不散落在业务目录。
 - 参考：<https://github.com/waveshareteam/ESP32-S3-RLCD-4.2>、<https://github.com/redgreat/racewong>

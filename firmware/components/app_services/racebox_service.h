@@ -6,7 +6,7 @@
 extern "C" {
 #endif
 
-/* RaceBox 单条记录（字段对齐 lc_racebox 表，见 doc/rules/04） */
+/* RaceBox 单条记录（字段对齐 lc_racebox 表，见 doc/SPECIFICATIONS.md） */
 typedef struct {
     int itow;
     int year, month, day, hour, minute, second;
