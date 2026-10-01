@@ -17,6 +17,9 @@ func TestSettingsPersistAndRestartBoundary(t *testing.T) {
 	seed.Server.Username = "admin"
 	seed.Server.Password = "admin-secret"
 	seed.Worktime.MySQL.DSN = "user:secret@tcp(localhost:3306)/pingcode"
+	seed.Worktime.PingCode.BaseURL = "https://zhongrui.pingcode.com"
+	seed.Worktime.PingCode.Username = "test-user"
+	seed.Worktime.PingCode.Password = "ping-secret"
 	path := filepath.Join(t.TempDir(), "settings.sqlite")
 	db, err := openSettings(path, seed)
 	if err != nil {
@@ -25,6 +28,15 @@ func TestSettingsPersistAndRestartBoundary(t *testing.T) {
 	cfg, err := readSettings(db)
 	if err != nil {
 		t.Fatal(err)
+	}
+	var raw string
+	if err := db.QueryRow("SELECT body FROM settings WHERE id=1").Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"admin-secret", "user:secret", "ping-secret"} {
+		if strings.Contains(raw, secret) {
+			t.Fatalf("SQLite contains plaintext secret %q", secret)
+		}
 	}
 	app := &App{cfg: cfg, settings: db}
 	mux := http.NewServeMux()
@@ -47,6 +59,9 @@ func TestSettingsPersistAndRestartBoundary(t *testing.T) {
 		Data Config `json:"data"`
 	}
 	json.Unmarshal(w.Body.Bytes(), &response)
+	if response.Data.Worktime.PingCode.Password != "******" {
+		t.Fatal("PingCode password was not masked")
+	}
 	response.Data.Worktime.MySQL.EmployeeNo = "ZR16060018"
 	response.Data.Worktime.MySQL.Query = "SELECT '2026-09-25' AS date, 8 AS hours"
 	body, _ := json.Marshal(response.Data)
@@ -68,7 +83,7 @@ func TestSettingsPersistAndRestartBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if saved.Worktime.MySQL.EmployeeNo != "ZR16060018" || saved.Worktime.MySQL.DSN != cfg.Worktime.MySQL.DSN || saved.Server.Token != "admin-secret" || saved.Server.Password != "admin-secret" {
+	if saved.Worktime.MySQL.EmployeeNo != "ZR16060018" || saved.Worktime.MySQL.DSN != cfg.Worktime.MySQL.DSN || saved.Worktime.PingCode.Password != "ping-secret" || saved.Server.Token != "admin-secret" || saved.Server.Password != "admin-secret" {
 		t.Fatal("persistent config or masked secrets were lost")
 	}
 	app.settings = db

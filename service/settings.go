@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,8 +22,17 @@ import (
 //go:embed admin.html
 var adminHTML string
 
-func openSettings(path string, seed Config) (*sql.DB, error) {
+type SettingsStore struct {
+	*sql.DB
+	cipher *settingsCipher
+}
+
+func openSettings(path string, seed Config) (*SettingsStore, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return nil, err
+	}
+	cipher, err := loadSettingsCipher(path)
+	if err != nil {
 		return nil, err
 	}
 	db, err := sql.Open("sqlite", path)
@@ -42,10 +52,19 @@ func openSettings(path string, seed Config) (*sql.DB, error) {
 	if seed.Worktime.MySQL.TimeoutSec <= 0 {
 		seed.Worktime.MySQL.TimeoutSec = 10
 	}
+	if seed.Worktime.PingCode.TimeoutSec <= 0 {
+		seed.Worktime.PingCode.TimeoutSec = 20
+	}
 	if seed.Worktime.MySQL.QueryFile == "" {
 		seed.Worktime.MySQL.QueryFile = "/app/conf/worktime.sql"
 	}
-	body, err := json.Marshal(seed)
+	store := &SettingsStore{DB: db, cipher: cipher}
+	storedSeed, err := cryptConfig(seed, cipher, true)
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	body, err := json.Marshal(storedSeed)
 	if err == nil {
 		_, err = db.Exec("INSERT OR IGNORE INTO settings(id,body) VALUES(1,?)", string(body))
 	}
@@ -57,17 +76,51 @@ func openSettings(path string, seed Config) (*sql.DB, error) {
 		db.Close()
 		return nil, err
 	}
-	return db, nil
+	var current string
+	if err := db.QueryRow("SELECT body FROM settings WHERE id=1").Scan(&current); err != nil {
+		db.Close()
+		return nil, err
+	}
+	var currentCfg Config
+	if err := json.Unmarshal([]byte(current), &currentCfg); err != nil {
+		db.Close()
+		return nil, err
+	}
+	plainCfg, err := cryptConfig(currentCfg, cipher, false)
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := writeSettings(store, plainCfg); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return store, nil
 }
 
-func readSettings(db *sql.DB) (Config, error) {
+func readSettings(store *SettingsStore) (Config, error) {
 	var cfg Config
 	var body string
-	err := db.QueryRow("SELECT body FROM settings WHERE id=1").Scan(&body)
+	err := store.QueryRow("SELECT body FROM settings WHERE id=1").Scan(&body)
 	if err == nil {
 		err = json.Unmarshal([]byte(body), &cfg)
 	}
-	return cfg, err
+	if err != nil {
+		return cfg, err
+	}
+	return cryptConfig(cfg, store.cipher, false)
+}
+
+func writeSettings(store *SettingsStore, cfg Config) error {
+	stored, err := cryptConfig(cfg, store.cipher, true)
+	if err != nil {
+		return err
+	}
+	body, err := json.Marshal(stored)
+	if err == nil {
+		_, err = store.Exec("UPDATE settings SET body=? WHERE id=1", string(body))
+	}
+	return err
 }
 
 func validateSettings(cfg Config) error {
@@ -88,6 +141,18 @@ func validateSettings(cfg Config) error {
 	}
 	if cfg.Worktime.MySQL.TimeoutSec < 1 || cfg.Worktime.MySQL.TimeoutSec > 120 {
 		return errors.New("查询超时须为 1–120 秒")
+	}
+	if cfg.Worktime.PingCode.TimeoutSec < 1 || cfg.Worktime.PingCode.TimeoutSec > 120 {
+		return errors.New("PingCode 超时须为 1–120 秒")
+	}
+	if cfg.Worktime.PingCode.BaseURL != "" {
+		u, err := url.Parse(cfg.Worktime.PingCode.BaseURL)
+		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+			return errors.New("PingCode 地址必须是有效 HTTPS 地址且不能包含账号密码")
+		}
+		if cfg.Worktime.PingCode.Username == "" || cfg.Worktime.PingCode.Password == "" {
+			return errors.New("启用 PingCode 时账号和密码不能为空")
+		}
 	}
 	if cfg.Worktime.MySQL.DSN != "" {
 		if _, err := mysql.ParseDSN(cfg.Worktime.MySQL.DSN); err != nil {
@@ -138,6 +203,9 @@ func (a *App) registerAdmin(mux *http.ServeMux) {
 		if cfg.Worktime.MySQL.DSN != "" {
 			cfg.Worktime.MySQL.DSN = "******"
 		}
+		if cfg.Worktime.PingCode.Password != "" {
+			cfg.Worktime.PingCode.Password = "******"
+		}
 		jsonReply(w, 200, map[string]any{"data": cfg})
 	}))
 	mux.HandleFunc("PUT /api/settings", a.adminAuth(func(w http.ResponseWriter, r *http.Request) {
@@ -171,14 +239,14 @@ func (a *App) registerAdmin(mux *http.ServeMux) {
 		if cfg.Worktime.MySQL.DSN == "******" {
 			cfg.Worktime.MySQL.DSN = old.Worktime.MySQL.DSN
 		}
+		if cfg.Worktime.PingCode.Password == "******" {
+			cfg.Worktime.PingCode.Password = old.Worktime.PingCode.Password
+		}
 		if err = validateSettings(cfg); err != nil {
 			jsonReply(w, 400, map[string]any{"message": err.Error()})
 			return
 		}
-		body, err := json.Marshal(cfg)
-		if err == nil {
-			_, err = a.settings.Exec("UPDATE settings SET body=? WHERE id=1", string(body))
-		}
+		err = writeSettings(a.settings, cfg)
 		if err != nil {
 			jsonReply(w, 500, map[string]any{"message": "写入 SQLite 失败，配置未保存"})
 			return

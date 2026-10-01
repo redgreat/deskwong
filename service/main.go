@@ -39,10 +39,16 @@ type Config struct {
 		Password string `yaml:"password" json:"password"`
 	} `yaml:"server" json:"server"`
 	Worktime struct {
-		// 直接从公司 PingCode 的 MySQL 取工时；SQL 放在镜像里的模板文件，方便你自己替换
+		// 优先通过 PingCode 网页 API 取工时；保留 MySQL 作为兼容数据源。
 		ExpectedDailyHours float64 `yaml:"expected_daily_hours" json:"expected_daily_hours"`
 		StaticToken        string  `yaml:"token" json:"token"`
-		MySQL              struct {
+		PingCode           struct {
+			BaseURL    string `yaml:"base_url" json:"base_url"`
+			Username   string `yaml:"username" json:"username"`
+			Password   string `yaml:"password" json:"password"`
+			TimeoutSec int    `yaml:"timeout_sec" json:"timeout_sec"`
+		} `yaml:"pingcode" json:"pingcode"`
+		MySQL struct {
 			DSN        string `yaml:"dsn" json:"dsn"`
 			EmployeeNo string `yaml:"employee_no" json:"employee_no"`
 			QueryFile  string `yaml:"query_file" json:"query_file"`
@@ -58,7 +64,7 @@ type Config struct {
 
 type App struct {
 	cfg        Config
-	settings   *sql.DB
+	settings   *SettingsStore
 	restart    func()
 	client     *http.Client
 	worktimeDB *sql.DB // 工时查询（公司 PingCode MySQL）
@@ -187,7 +193,7 @@ func parseYearMonth(r *http.Request) (int, time.Month, error) {
 	return year, month, nil
 }
 
-/* ---------- 工时：优先代理上游，否则直接查公司 MySQL ---------- */
+/* ---------- 工时：优先代理上游，其次 PingCode 网页 API，最后 MySQL ---------- */
 
 func (a *App) worktimeSQL() (string, error) {
 	if a.cfg.Worktime.MySQL.Query != "" {
@@ -341,23 +347,37 @@ func expectedHours(year int, month time.Month, daily float64) float64 {
 }
 
 // GET /worktime/summary?year=&month=
-// 数据来源优先级：DESKWONG_WORKTIME_UPSTREAM 代理 → 直接查公司 MySQL
+// 数据来源优先级：DESKWONG_WORKTIME_UPSTREAM 代理 → PingCode 网页 API → 公司 MySQL
 func (a *App) worktime(w http.ResponseWriter, r *http.Request) {
 	if upstream := os.Getenv("DESKWONG_WORKTIME_UPSTREAM"); upstream != "" {
 		if a.proxyJSON(w, r, upstream) {
 			return
 		}
 	}
-	if a.worktimeDB == nil {
-		jsonReply(w, http.StatusNotImplemented, map[string]any{
-			"code":    2004,
-			"message": "工时数据源未配置：请在服务后台 /admin 填写 MySQL DSN/工号，或设置 DESKWONG_WORKTIME_UPSTREAM",
-		})
-		return
-	}
 	year, month, err := parseYearMonth(r)
 	if err != nil {
 		jsonReply(w, 400, map[string]any{"code": 2003, "message": err.Error()})
+		return
+	}
+	if a.cfg.Worktime.PingCode.BaseURL != "" && a.cfg.Worktime.PingCode.Username != "" && a.cfg.Worktime.PingCode.Password != "" {
+		days, total, err := a.queryPingCodeWorktime(r.Context(), year, month)
+		if err != nil {
+			slog.Warn("PingCode worktime query failed", "error", err)
+			jsonReply(w, http.StatusServiceUnavailable, map[string]any{"code": 2006, "message": "PingCode 工时读取失败"})
+			return
+		}
+		jsonReply(w, 200, map[string]any{"code": 0, "message": "ok", "data": map[string]any{
+			"year": year, "month": int(month), "days": days,
+			"total_recorded_hours": total,
+			"total_expected_hours": expectedHours(year, month, a.cfg.Worktime.ExpectedDailyHours),
+		}})
+		return
+	}
+	if a.worktimeDB == nil {
+		jsonReply(w, http.StatusNotImplemented, map[string]any{
+			"code":    2004,
+			"message": "工时数据源未配置：请在服务后台 /admin 填写 PingCode 账号密码、MySQL DSN/工号，或设置 DESKWONG_WORKTIME_UPSTREAM",
+		})
 		return
 	}
 	days, total, err := a.queryWorktime(r.Context(), year, month)
@@ -606,7 +626,7 @@ func main() {
 	}
 }
 
-func runService(parent context.Context, cfg Config, store *sql.DB) error {
+func runService(parent context.Context, cfg Config, store *SettingsStore) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	app := &App{cfg: cfg, settings: store, restart: cancel, client: &http.Client{Timeout: 12 * time.Second}}

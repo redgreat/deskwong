@@ -10,3 +10,18 @@ server:
 log:
   level: "info"   # debug | info | warn | error；可被环境变量 DESKWONG_LOG_LEVEL 覆盖
   format: "text"  # text | json；可被环境变量 DESKWONG_LOG_FORMAT 覆盖
+
+worktime:
+  expected_daily_hours: 8
+  token: ""
+  pingcode:
+    base_url: ""
+    username: ""
+    password: ""
+    timeout_sec: 20
+  mysql:
+    dsn: ""
+    employee_no: ""
+    query_file: "/app/conf/worktime.sql"
+    query: ""
+    timeout_sec: 10
