@@ -17,10 +17,17 @@
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/" && pwd)"
-DEPLOY_DIR="${DEPLOY_DIR:-$REPO_ROOT/service}"
+# 目录布局自适应：部署机上脚本与 docker-compose.yml 同级；仓库内脚本在 script/ 下、compose 在 service/
+if [[ -z "${DEPLOY_DIR:-}" ]]; then
+  if [[ -f "$SCRIPT_DIR/docker-compose.yml" ]]; then
+    DEPLOY_DIR="$SCRIPT_DIR"
+  else
+    DEPLOY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)/service"
+  fi
+fi
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-120}"
-HEALTH_PORT="${HEALTH_PORT:-8001}"
+# 健康检查端口：auto 表示从容器 8001/tcp 的宿主机映射自动解析（部署端口可能不是 8001）
+HEALTH_PORT="${HEALTH_PORT:-auto}"
 FOLLOW_LOGS=0
 
 c_reset=$'\033[0m'; c_red=$'\033[31m'; c_green=$'\033[32m'; c_yellow=$'\033[33m'; c_blue=$'\033[36m'
@@ -56,9 +63,9 @@ mapfile -t IMAGES < <("${COMPOSE[@]}" config --images | sed '/^[[:space:]]*$/d' 
 [[ ${#IMAGES[@]} -gt 0 ]] || die "未从 docker-compose.yml 解析到镜像"
 
 if command -v curl >/dev/null 2>&1; then
-  health_check() { curl -sf "http://localhost:${HEALTH_PORT}/health" >/dev/null 2>&1; }
+  health_check() { curl -sf "http://127.0.0.1:${HEALTH_PORT}/health" >/dev/null 2>&1; }
 elif command -v wget >/dev/null 2>&1; then
-  health_check() { wget -q -O /dev/null "http://localhost:${HEALTH_PORT}/health"; }
+  health_check() { wget -q -O /dev/null "http://127.0.0.1:${HEALTH_PORT}/health"; }
 else
   warn "未找到 curl 或 wget，仅检查容器运行状态"
   health_check() { return 0; }
@@ -87,6 +94,13 @@ if [[ -z "$container_id" ]]; then
   container_id="$("${COMPOSE[@]}" ps -q | head -n1)"
 fi
 [[ -n "$container_id" ]] || die "未找到运行中的容器"
+
+# 解析容器 8001/tcp 映射到宿主机的实际端口（如 8030:8001 时打 8030）
+if [[ "$HEALTH_PORT" == "auto" ]]; then
+  hp="$(docker inspect --format '{{with index .NetworkSettings.Ports "8001/tcp"}}{{(index . 0).HostPort}}{{end}}' "$container_id" 2>/dev/null || true)"
+  HEALTH_PORT="${hp:-8001}"
+fi
+log "健康检查: http://127.0.0.1:${HEALTH_PORT}/health"
 
 log "等待服务就绪（最多 ${HEALTH_TIMEOUT}s）"
 ready=0
