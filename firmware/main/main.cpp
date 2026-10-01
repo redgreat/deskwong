@@ -283,6 +283,9 @@ static void ui_update_task(void *arg) {
         if (tick % 300 == 0 || g_summary_dirty) {
             g_summary_dirty = false;
             sensor_service_read(&g_temp, &g_humi);
+            /* 工时拉取会改变每日进度条数据：与右上角汇总一起重画日历，
+             * 否则新工时只更新总数，格子进度条要等到跨天才刷新。 */
+            prepare_calendar(dt.year, dt.month, dt.day, cells);
             if (Lvgl_lock(100)) {
                 char weather[64];
                 if (g_weather.text[0])
@@ -298,6 +301,7 @@ static void ui_update_task(void *arg) {
                 main_screen_update_summary(g_worktime.recorded_hours, g_worktime.expected_hours,
                     weather, g_weather.text[0] ? g_weather.icon : 0, lunar_full, ai5h, aiweek,
                     racebox_service_synced_today(), racebox_service_point_count(), g_temp, g_humi);
+                main_screen_update_calendar(cells);
                 Lvgl_unlock();
             }
         }
