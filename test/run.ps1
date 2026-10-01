@@ -32,6 +32,17 @@ try {
 } finally {
     if (Test-Path -LiteralPath $raceboxExe) { Remove-Item -LiteralPath $raceboxExe -Force }
 }
+$services = Join-Path $repo "firmware/components/app_services"
+$holiday = Join-Path $PSScriptRoot "firmware/holiday"
+$holidayExe = Join-Path ([IO.Path]::GetTempPath()) ("deskwong-holiday-test-" + [guid]::NewGuid().ToString("N") + ".exe")
+try {
+    & gcc -std=c11 -O0 -g -I $services (Join-Path $holiday "holiday_test.c") (Join-Path $services "holiday_service.c") (Join-Path $services "calendar_service.c") -o $holidayExe
+    if ($LASTEXITCODE) { throw "Holiday host test compilation failed" }
+    & $holidayExe
+    if ($LASTEXITCODE) { throw "Holiday host test failed" }
+} finally {
+    if (Test-Path -LiteralPath $holidayExe) { Remove-Item -LiteralPath $holidayExe -Force }
+}
 $forbidden = @(
     Get-ChildItem -LiteralPath (Join-Path $repo "service") -Filter "*_test.go" -File -ErrorAction SilentlyContinue
     Get-ChildItem -LiteralPath (Join-Path $repo "firmware/components") -Filter "*_test.*" -File -Recurse -ErrorAction SilentlyContinue

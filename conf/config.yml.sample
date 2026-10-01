@@ -22,6 +22,5 @@ worktime:
   mysql:
     dsn: ""
     employee_no: ""
-    query_file: "/app/conf/worktime.sql"
     query: ""
     timeout_sec: 10

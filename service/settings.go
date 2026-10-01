@@ -55,9 +55,6 @@ func openSettings(path string, seed Config) (*SettingsStore, error) {
 	if seed.Worktime.PingCode.TimeoutSec <= 0 {
 		seed.Worktime.PingCode.TimeoutSec = 20
 	}
-	if seed.Worktime.MySQL.QueryFile == "" {
-		seed.Worktime.MySQL.QueryFile = "/app/conf/worktime.sql"
-	}
 	store := &SettingsStore{DB: db, cipher: cipher}
 	storedSeed, err := cryptConfig(seed, cipher, true)
 	if err != nil {

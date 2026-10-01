@@ -202,7 +202,7 @@ void main_screen_init(int width, int height) {
     s_month = label(scr, "--", &lv_font_digits_36, 92, 37, 42);
     lv_obj_set_style_text_align(s_month, LV_TEXT_ALIGN_CENTER, 0);
     label(scr, "月", &lv_font_zh_14, 136, 53);
-    s_total = label(scr, "--/-- --%", &lv_font_digits_18, 163, 44, 136);
+    s_total = label(scr, "0/0 0%", &lv_font_digits_18, 163, 44, 136);
     lv_obj_set_style_text_align(s_total, LV_TEXT_ALIGN_RIGHT, 0);
     meter(scr, 180, 64, 119, 5, &s_summary_fill);
     const char *wh[] = {"一", "二", "三", "四", "五", "六", "日"};
@@ -311,9 +311,15 @@ void main_screen_update_summary(float recorded, float expected, const char *weat
                                 const ai_provider_t *ai5h, const ai_provider_t *aiweek, bool synced, int points,
                                 float indoor_temp, float indoor_humidity) {
     char b[96];
-    if (expected > 0) snprintf(b, sizeof(b), "%.0f/%.0f %.0f%%", recorded, expected, recorded/expected*100);
-    else snprintf(b, sizeof(b), "%.0f/-- --%%", recorded);
-    text_changed(s_total, b); set_meter(s_summary_fill, expected > 0 ? recorded/expected*100 : 0, 119);
+    /* 本月工时占比：没有记录就是 0，没拿到“应记录”也不显示 -- */
+    float shown_recorded = isfinite(recorded) && recorded > 0 ? recorded : 0;
+    float shown_expected = isfinite(expected) && expected > 0 ? expected : 0;
+    float percent = shown_expected > 0 ? shown_recorded / shown_expected * 100.0f : 0;
+    if (!isfinite(percent) || percent < 0) percent = 0;
+    if (percent > 999) percent = 999;
+    snprintf(b, sizeof(b), "%.0f/%.0f %.0f%%", shown_recorded, shown_expected, percent);
+    text_changed(s_total, b);
+    set_meter(s_summary_fill, percent, 119);
     if (synced && !s_offline) lv_obj_clear_flag(s_race_check, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(s_race_check, LV_OBJ_FLAG_HIDDEN);
     if (points >= 1000000) snprintf(b, sizeof(b), LV_SYMBOL_GPS " %.1fM", points/1000000.0f);

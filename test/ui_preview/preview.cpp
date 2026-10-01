@@ -2,6 +2,7 @@
 #include "main_screen.h"
 #include "sync_screen.h"
 #include "calendar_service.h"
+#include "holiday_service.h"
 #include "ui_fonts.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -56,11 +57,15 @@ int main(int argc,char **argv) {
         c->work_hours=empty||c->type==CAL_WEEKEND?0:(day%8)+1;
     }
     main_screen_update_calendar(cells);
+    /* 本月应记录工时与固件一致：法定工作日 × 8 小时 */
+    float expected = 0;
+    for (int day = 1; day <= calendar_month_days(2026, month); ++day)
+        if (holiday_is_workday(2026, month, day)) expected += 8;
     ai_provider_t five = {}, weekly = {};
     five.remaining_percent = 72; weekly.remaining_percent = 44;
     struct tm reset = {}; reset.tm_year=126; reset.tm_mon=8; reset.tm_mday=12; reset.tm_hour=18; reset.tm_min=30;
     five.resets_at = mktime(&reset); reset.tm_mday=18; weekly.resets_at=mktime(&reset);
-    main_screen_update_summary(empty?0:64,empty?0:72,empty?NULL:"晴\n26C / 58%",empty?0:argc>4?atoi(argv[4]):100,lunar,empty?NULL:&five,empty?NULL:&weekly,!empty,empty?0:12800,empty?NAN:24.0f,empty?NAN:52.0f);
+    main_screen_update_summary(empty?0:64,expected,empty?NULL:"晴\n26C / 58%",empty?0:argc>4?atoi(argv[4]):100,lunar,empty?NULL:&five,empty?NULL:&weekly,!empty,empty?0:12800,empty?NAN:24.0f,empty?NAN:52.0f);
     sync_screen_init(400,300);
     if (argc>3 && strcmp(argv[3],"sync")==0) {
         racebox_progress_t p={};p.state=RACEBOX_UPLOADING;p.received=750;p.total=753;p.uploaded=612;p.download_done=true;p.percent=81;p.elapsed_seconds=23;p.speed_kbps_x10=326;

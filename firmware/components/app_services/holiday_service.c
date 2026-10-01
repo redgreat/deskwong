@@ -74,3 +74,14 @@ bool holiday_is_workday(int year, int month, int day) {
     if (t == DAY_WORKDAY) return true;
     return !holiday_is_weekend(year, month, day);
 }
+
+int holiday_workdays(int year, int month) {
+    if (year < 2001 || month < 1 || month > 12) return 0;
+    int days = calendar_month_days(year, month);
+    if (days < 28 || days > 31) return 0;
+    int workdays = 0;
+    for (int d = 1; d <= days; d++) {
+        if (holiday_is_workday(year, month, d)) workdays++;
+    }
+    return workdays;
+}

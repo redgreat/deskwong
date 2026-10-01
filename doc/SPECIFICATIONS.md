@@ -17,10 +17,10 @@
 `GET {base}/worktime/summary?year=2026&month=10`，请求头 `Authorization: Bearer {token}`。
 
 ```json
-{"code":0,"message":"ok","data":{"year":2026,"month":10,"days":[{"date":"2026-10-01","hours":2}],"total_recorded_hours":2,"total_expected_hours":168}}
+{"code":0,"message":"ok","data":{"year":2026,"month":10,"days":[{"date":"2026-10-01","hours":2}],"total_recorded_hours":2,"total_expected_hours":144}}
 ```
 
-`days` 只需返回有记录日期；小时为浮点。错误响应使用非零 `code` 和脱敏 `message`。
+`days` 只需返回有记录日期；小时为浮点。`total_expected_hours` 按中国大陆法定工作日（排除自然周末与法定节假日，计入调休上班日）× 每日标准工时（`expected_daily_hours`，默认 8）计算；设备端用同一份节假日表在服务端缺失时兜底，主屏固定显示 `已记录/应记录 百分比`，没有记录即 `0%`，不出现 `--`。错误响应使用非零 `code` 和脱敏 `message`。
 
 ### 2.2 AI 用量
 

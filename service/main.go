@@ -72,6 +72,125 @@ type App struct {
 	aiMu      sync.Mutex
 	aiCached  []byte
 	aiCacheAt time.Time
+
+	// 节假日年历缓存：按年份缓存 timor.tech 整年数据，按天区分放假/调休。
+	// 缓存最多保留 7 天，到期自动重拉；重拉失败保留旧缓存并告警。
+	holMu    sync.Mutex
+	holCache map[int]holidayYear
+}
+
+// ---- 节假日：免费接口 timor.tech（https://timor.tech/api/holiday）----
+// 按年缓存 7 天；失败回落到 2025-2026 内置表，表外年份按自然周末。
+// 通过 DESKWONG_HOLIDAY_API_BASE 覆盖，方便测试和内网代理。
+func holidayAPIBase() string {
+	if base := strings.TrimRight(os.Getenv("DESKWONG_HOLIDAY_API_BASE"), "/"); base != "" {
+		return base
+	}
+	return "https://timor.tech/api/holiday"
+}
+
+type timorHolidayDay struct {
+	Holiday bool   `json:"holiday"` // true=放假，false=调休上班
+	Name    string `json:"name"`
+}
+
+type timorHolidayYear struct {
+	Code    int                        `json:"code"`
+	Holiday map[string]timorHolidayDay `json:"holiday"`
+}
+
+// holidayYear 是某年"放假集合 + 调休集合"，是否完整由 complete 标记。
+type holidayYear struct {
+	year     int
+	fetched  time.Time
+	off      map[string]bool // 放假（含法定假和连带休息）
+	workdays map[string]bool // 调休上班
+	complete bool            // 整年数据拉取成功，用于判断能否信任空调休集合
+}
+
+func parseTimorHolidayYear(year int, body []byte) (holidayYear, error) {
+	var payload timorHolidayYear
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return holidayYear{}, err
+	}
+	if payload.Code != 0 {
+		return holidayYear{}, fmt.Errorf("节假日接口返回 code=%d", payload.Code)
+	}
+	out := holidayYear{year: year, off: map[string]bool{}, workdays: map[string]bool{}, complete: true}
+	for md, day := range payload.Holiday {
+		date := fmt.Sprintf("%04d-%s", year, md)
+		if _, err := time.Parse("2006-01-02", date); err != nil {
+			continue
+		}
+		if day.Holiday {
+			out.off[date] = true
+		} else {
+			out.workdays[date] = true
+		}
+	}
+	return out, nil
+}
+
+func (a *App) fetchHolidayYear(ctx context.Context, year int) (holidayYear, error) {
+	timeout := 15 * time.Second
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	url := holidayAPIBase() + "/year/" + strconv.Itoa(year) + "/"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return holidayYear{}, err
+	}
+	req.Header.Set("User-Agent", "deskwong-service/"+version)
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return holidayYear{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return holidayYear{}, fmt.Errorf("节假日接口 HTTP %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return holidayYear{}, err
+	}
+	return parseTimorHolidayYear(year, body)
+}
+
+// holidayYearFor 返回某年节假日：缓存 7 天内直接用，过期才重拉；
+// 拉取失败保留旧缓存并告警，旧缓存也没有时才退回内置表。
+func (a *App) holidayYearFor(ctx context.Context, year int) holidayYear {
+	a.holMu.Lock()
+	cached, ok := a.holCache[year]
+	a.holMu.Unlock()
+	if ok && time.Since(cached.fetched) < 7*24*time.Hour {
+		return cached
+	}
+	fresh, err := a.fetchHolidayYear(ctx, year)
+	if err != nil {
+		slog.Warn("holiday fetch failed", "year", year, "error", err)
+		return cached
+	}
+	fresh.fetched = time.Now()
+	a.holMu.Lock()
+	if a.holCache == nil {
+		a.holCache = map[int]holidayYear{}
+	}
+	a.holCache[year] = fresh
+	a.holMu.Unlock()
+	return fresh
+}
+
+// isWorkdayAt 按"放假集合 + 调休集合 + 自然周末"判定是否应出勤。
+func isWorkdayAt(t time.Time, hy holidayYear) bool {
+	key := t.Format("2006-01-02")
+	if hy.workdays[key] {
+		return true
+	}
+	if hy.off[key] {
+		return false
+	}
+	wd := t.Weekday()
+	return wd != time.Saturday && wd != time.Sunday
 }
 
 func loadConfig(path string) (Config, error) {
@@ -199,15 +318,7 @@ func (a *App) worktimeSQL() (string, error) {
 	if a.cfg.Worktime.MySQL.Query != "" {
 		return a.cfg.Worktime.MySQL.Query, nil
 	}
-	path := a.cfg.Worktime.MySQL.QueryFile
-	if path == "" {
-		path = "/app/conf/worktime.sql"
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("读取工时 SQL 模板失败（%s）：%w", path, err)
-	}
-	return string(b), nil
+	return "", fmt.Errorf("未配置工时 SQL 查询模板")
 }
 
 // 渲染 SQL 模板：可用 {{.Year}} {{.Month}} {{.EmployeeNo}} {{.Start}} {{.End}}
@@ -331,15 +442,74 @@ func toFloat(v any) float64 {
 	return f
 }
 
-func expectedHours(year int, month time.Month, daily float64) float64 {
+// 单日法定工作日表（接口节日不可用时的回落口径），与固件保持一致。
+// 2025-2026 为国务院发布的放假安排转写；2027 起由 timor.tech 整年接口自动覆盖。
+type cnHolidayRange struct{ year, startMonth, startDay, endMonth, endDay int }
+
+var cnHolidays = []cnHolidayRange{
+	{2025, 1, 1, 1, 1}, {2025, 1, 28, 2, 4}, {2025, 4, 4, 4, 6},
+	{2025, 5, 1, 5, 5}, {2025, 5, 31, 6, 2}, {2025, 10, 1, 10, 8},
+	{2026, 1, 1, 1, 3}, {2026, 2, 15, 2, 23}, {2026, 4, 4, 4, 6},
+	{2026, 5, 1, 5, 5}, {2026, 6, 19, 6, 21}, {2026, 9, 25, 9, 27},
+	{2026, 10, 1, 10, 7},
+}
+
+type cnWorkday struct{ year, month, day int }
+
+var cnMakeupWorkdays = []cnWorkday{
+	{2025, 1, 26}, {2025, 2, 8}, {2025, 4, 27}, {2025, 9, 28}, {2025, 10, 11},
+	{2026, 1, 4}, {2026, 2, 14}, {2026, 2, 28}, {2026, 5, 9}, {2026, 9, 20},
+	{2026, 10, 10},
+}
+
+func inDayRange(month, day, startMonth, startDay, endMonth, endDay int) bool {
+	if startMonth == endMonth {
+		return month == startMonth && day >= startDay && day <= endDay
+	}
+	if month == startMonth {
+		return day >= startDay
+	}
+	if month == endMonth {
+		return day <= endDay
+	}
+	return month > startMonth && month < endMonth
+}
+
+// cnWorkdayAt 判断某天是否法定工作日：调休上班日算上班，法定节假日与自然周末不算。
+func cnWorkdayAt(t time.Time) bool {
+	year, month, day := t.Year(), int(t.Month()), t.Day()
+	for _, w := range cnMakeupWorkdays {
+		if w.year == year && w.month == month && w.day == day {
+			return true
+		}
+	}
+	for _, h := range cnHolidays {
+		if h.year == year && inDayRange(month, day, h.startMonth, h.startDay, h.endMonth, h.endDay) {
+			return false
+		}
+	}
+	wd := t.Weekday()
+	return wd != time.Saturday && wd != time.Sunday
+}
+
+// expectedHours 为当月应收工时 = 法定工作日 × 每日标准工时。
+// 节假日来源优先级：timor.tech 整年接口（按年缓存 7 天）→ 内置表 → 自然周末。
+func (a *App) expectedHours(ctx context.Context, year int, month time.Month, daily float64) float64 {
 	if daily <= 0 {
 		daily = 8
 	}
+	hy := a.holidayYearFor(ctx, year)
 	days := time.Date(year, month+1, 0, 0, 0, 0, 0, time.Local).Day()
 	total := 0.0
 	for d := 1; d <= days; d++ {
-		wd := time.Date(year, month, d, 0, 0, 0, 0, time.Local).Weekday()
-		if wd != time.Saturday && wd != time.Sunday {
+		t := time.Date(year, month, d, 0, 0, 0, 0, time.Local)
+		workday := false
+		if hy.complete {
+			workday = isWorkdayAt(t, hy)
+		} else {
+			workday = cnWorkdayAt(t)
+		}
+		if workday {
 			total += daily
 		}
 	}
@@ -369,7 +539,7 @@ func (a *App) worktime(w http.ResponseWriter, r *http.Request) {
 		jsonReply(w, 200, map[string]any{"code": 0, "message": "ok", "data": map[string]any{
 			"year": year, "month": int(month), "days": days,
 			"total_recorded_hours": total,
-			"total_expected_hours": expectedHours(year, month, a.cfg.Worktime.ExpectedDailyHours),
+			"total_expected_hours": a.expectedHours(r.Context(), year, month, a.cfg.Worktime.ExpectedDailyHours),
 		}})
 		return
 	}
@@ -389,7 +559,7 @@ func (a *App) worktime(w http.ResponseWriter, r *http.Request) {
 	jsonReply(w, 200, map[string]any{"code": 0, "message": "ok", "data": map[string]any{
 		"year": year, "month": int(month), "days": days,
 		"total_recorded_hours": total,
-		"total_expected_hours": expectedHours(year, month, a.cfg.Worktime.ExpectedDailyHours),
+		"total_expected_hours": a.expectedHours(r.Context(), year, month, a.cfg.Worktime.ExpectedDailyHours),
 	}})
 }
 
