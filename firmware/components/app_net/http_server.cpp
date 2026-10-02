@@ -13,6 +13,7 @@
 #include "cJSON.h"
 #include "wifi_sta.h"
 #include "http_server.h"
+#include "portal_proxy.h"
 #include "weather_service.h"
 #include "worktime_service.h"
 #include "aiusage_service.h"
@@ -310,18 +311,26 @@ static esp_err_t config_put_handler(httpd_req_t *req) {
     it = cJSON_GetObjectItem(j, "voice_mcp_enabled");
     if (it && cJSON_IsBool(it)) pending.voice_mcp_enabled = cJSON_IsTrue(it);
 
-    char mqtt_check[96];
-    if (app_mqtt_test_config(pending.mqtt_broker, pending.mqtt_port,
+    char mqtt_check[96] = {0};
+    /* MQTT 连测只做提示、不再阻断保存：在线时测一下把结果带回，离线跳过。
+     * 之前"在线必测、失败 400"会在 broker 不可达时连 WiFi 配置都存不进去。 */
+    bool mqtt_tested = false;
+    if (pending.mqtt_broker[0] && wifi_is_connected()) {
+        mqtt_tested = true;
+        app_mqtt_test_config(pending.mqtt_broker, pending.mqtt_port,
                              pending.mqtt_user, pending.mqtt_pass,
-                             10000, mqtt_check, sizeof(mqtt_check)) != 0) {
-        cJSON_Delete(j);
-        return send_err(req, 400, mqtt_check);
+                             10000, mqtt_check, sizeof(mqtt_check));
     }
     cJSON_Delete(j);
     if (app_config_save(&pending) != ESP_OK) return send_err(req, 500, "配置保存失败");
-    return send_err(req, 0, pending.mqtt_broker[0]
-                              ? "MQTT 校验成功，已保存到设备 Flash，重启后生效"
-                              : "MQTT 已关闭，配置已保存到设备 Flash，重启后生效");
+    if (pending.mqtt_broker[0]) {
+        char msg[224];
+        snprintf(msg, sizeof(msg), "配置已保存到设备 Flash，重启后生效。MQTT：%s",
+                 mqtt_tested ? (mqtt_check[0] ? mqtt_check : "校验完成")
+                             : "设备当前离线，未校验");
+        return send_err(req, 0, msg);
+    }
+    return send_err(req, 0, "MQTT 已关闭，配置已保存到设备 Flash，重启后生效");
 }
 
 /* 语音调试端点：不接硬件也能验证小智链路。
@@ -497,7 +506,8 @@ esp_err_t http_server_start(app_config_t *cfg) {
     s_cfg = cfg;
     httpd_config_t conf = HTTPD_DEFAULT_CONFIG();
     conf.max_uri_handlers = 16;
-    conf.stack_size = 12 * 1024;
+    /* 门户代理会在本任务栈上跑 esp_http_client（含可能的 TLS 握手） */
+    conf.stack_size = 16 * 1024;
     /* SPIFFS/NVS/OTA disable flash cache. Their caller's stack must be in DRAM. */
     conf.task_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     conf.uri_match_fn = httpd_uri_match_wildcard;
@@ -529,6 +539,15 @@ esp_err_t http_server_start(app_config_t *cfg) {
     uri.uri = "/api/voice/start";          uri.method = HTTP_POST; uri.handler = voice_start_handler;
     httpd_register_uri_handler(server, &uri);
     uri.uri = "/api/voice/stop";           uri.method = HTTP_POST; uri.handler = voice_stop_handler;
+    httpd_register_uri_handler(server, &uri);
+    /* 门户代理（配网热点内做 captive portal 认证）：须注册在静态资源兜底路由之前 */
+    uri.uri = "/p/check";         uri.method = HTTP_GET;    uri.handler = portal_check_handler;
+    httpd_register_uri_handler(server, &uri);
+    uri.uri = "/p/start";         uri.method = HTTP_GET;    uri.handler = portal_start_handler;
+    httpd_register_uri_handler(server, &uri);
+    uri.uri = "/p/*";             uri.method = HTTP_GET;    uri.handler = portal_proxy_handler;
+    httpd_register_uri_handler(server, &uri);
+    uri.uri = "/p/*";             uri.method = HTTP_POST;   uri.handler = portal_proxy_handler;
     httpd_register_uri_handler(server, &uri);
     /* 静态资源兜底 */
     uri.uri = "/*";               uri.method = HTTP_GET;    uri.handler = static_handler;

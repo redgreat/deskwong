@@ -4,6 +4,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "esp_app_desc.h"
 #include "esp_ota_ops.h"
 
@@ -268,8 +269,9 @@ static void ui_update_task(void *arg) {
             char ip[32] = {0};
             g_battery = sensor_battery_level();
             wifi_get_ip(ip, sizeof(ip));
-            snprintf(status, sizeof(status), "%s | %u%%",
-                     wifi_is_connected() ? "WiFi" : "AP", (unsigned)g_battery);
+            /* WiFi=已联网；AP=配网热点开着；OFF=两者皆无（避免把"没连上"误读成配网模式） */
+            const char *net = wifi_is_connected() ? "WiFi" : (wifi_is_ap_mode() ? "AP" : "OFF");
+            snprintf(status, sizeof(status), "%s | %u%%", net, (unsigned)g_battery);
 
             if (Lvgl_lock(100)) {
                 main_screen_update_time(NULL, time_str, NULL, NULL);
@@ -335,6 +337,18 @@ static void ui_update_task(void *arg) {
     }
 }
 
+/* BOOT 长按确认：multi_button 按住 1 秒发 LONG_PRESS_START，
+ * 这里再要求继续按满剩余时长才生效，防止"按住 BOOT 进烧录模式后松手"
+ * 或无意短长按误触发配网重启。 */
+static bool boot_still_held_ms(int ms) {
+    int checks = ms / 50;
+    for (int i = 0; i < checks; i++) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+        if (!button_boot_pressed()) return false;
+    }
+    return button_boot_pressed();
+}
+
 static void button_task(void *arg) {
     while (1) {
         /* KEY（GPIO18）单击 → 触发 RaceBox 采集；同步弹窗可见时再按一次收起 */
@@ -371,6 +385,21 @@ static void button_task(void *arg) {
                     sync_screen_show();
                     Lvgl_unlock();
                 }
+            }
+        }
+
+        /* BOOT（GPIO0）按住约 3 秒 → 不重启，直接叠加配网热点（APSTA 共存，
+         * STA 照常连接）。之前"写标志+重启"的方案会在松手前把芯片带进下载
+         * 模式（GPIO0 低电平复位），已废弃。 */
+        EventBits_t boot_bits = xEventGroupGetBits(BootButtonGroups);
+        if (boot_bits & 0x04) {
+            xEventGroupClearBits(BootButtonGroups, 0x04);
+            if (boot_still_held_ms(2000)) {
+                ESP_LOGW(TAG, "BOOT held ~3s -> start setup AP (no restart)");
+                audio_service_cue(AUDIO_CUE_CANCEL);
+                wifi_start_ap();
+            } else {
+                ESP_LOGI(TAG, "BOOT long press cancelled (released early)");
             }
         }
     }
@@ -435,7 +464,8 @@ extern "C" void app_main(void) {
     net_scheduler_register(NET_JOB_AIUSAGE, job_aiusage, NULL,
                            refresh_period(g_cfg.aiusage_refresh_minutes, 60));
 
-    wifi_init(g_cfg.wifi_ssid, g_cfg.wifi_pass);
+    /* 开机只起 STA（无凭证时自动进纯 AP 配网）；热点由长按 BOOT 运行中开启 */
+    wifi_init_ex(g_cfg.wifi_ssid, g_cfg.wifi_pass, false);
     /* esp-mqtt resolves the broker immediately. Initialize it only after
      * wifi_init has created the TCP/IP mailbox, even if WiFi is still joining. */
     app_mqtt_init(g_cfg.mqtt_broker, g_cfg.mqtt_port, g_cfg.mqtt_user, g_cfg.mqtt_pass, NULL);

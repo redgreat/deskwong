@@ -84,6 +84,8 @@ python -m esptool --chip esp32s3 -b 460800 -p COM3 write_flash ^
 2. 设备默认进入 **AP 配置模式**（WiFi 未配置时）：手机/电脑连接热点 `deskwong-setup`（无密码），浏览器访问 `http://192.168.4.1`。
 3. 在配置后台登录（默认 `admin` / `admin`），**立即修改密码**，填写公司 WiFi SSID/密码并保存。
 4. 设备连上内网后，浏览器访问 `http://deskwong.local`（或设备 IP）进入配置后台，配置天气位置、工时 API、AI 用量 API、MQTT、提醒时间等。
+5. 换网络/换环境时：**长按 BOOT 约 3 秒**听到提示音，设备**立即**开放 `deskwong-setup` 配网热点——不重启、不清配置，原 WiFi 继续连接；热点仅本次开机内有效。手机连接后在后台改好 WiFi，重启生效。
+6. 网页认证（captive portal）网络：连接 `deskwong-setup` 后用手机浏览器打开 `http://192.168.4.1/p/start`，设备会探测门户并把认证页代理到热点内（认证请求从设备自身发出，放行落在设备上）。完成后用 `http://192.168.4.1/p/check` 确认放行状态。
 
 ## 外部接口契约（用户侧实现）
 
