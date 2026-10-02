@@ -72,6 +72,7 @@ typedef struct {
     char client_id[40];   /* UUID，首次生成后存 NVS */
     char session_id[40];
     int  down_rate;       /* 服务端下行采样率，由 hello 决定 */
+    uint32_t frame_cnt;   /* 已上行音频帧计数，用于调试日志 */
 
     OpusEncoder *enc;
     OpusDecoder *dec;
@@ -440,10 +441,27 @@ static void handle_json(const char *txt, int len)
         cJSON *id = payload ? cJSON_GetObjectItem(payload, "id") : NULL;
         cJSON *method = payload ? cJSON_GetObjectItem(payload, "method") : NULL;
         const char *m = cJSON_IsString(method) ? method->valuestring : "";
-        if (strcmp(m, "tools/call") == 0) {
+        if (strcmp(m, "initialize") == 0) {
+            /* MCP 握手：必须按 JSON-RPC 回 result，否则服务端判定握手失败、
+             * 不会进入对话/转录，表现就是“对着说话没反应”。 */
+            int rid = cJSON_IsNumber(id) ? id->valueint : 0;
+            char buf[256];
+            snprintf(buf, sizeof(buf),
+                     "{\"session_id\":\"%s\",\"type\":\"mcp\",\"payload\":{"
+                     "\"jsonrpc\":\"2.0\",\"id\":%d,"
+                     "\"result\":{\"capabilities\":{},\"serverInfo\":{"
+                     "\"name\":\"deskwong\",\"version\":\"1.0\"}}}}",
+                     s.session_id, rid);
+            ws_send_text(buf);
+        } else if (strcmp(m, "notifications/initialized") == 0) {
+            /* 通知类，无需回包 */
+        } else if (strcmp(m, "tools/call") == 0) {
             ESP_LOGW(TAG, "MCP 工具调用暂未实现，回错：%s", m);
+            send_mcp_error(cJSON_IsNumber(id) ? id->valueint : 0);
+        } else {
+            ESP_LOGW(TAG, "未处理的 MCP 方法：%s", m);
+            send_mcp_error(cJSON_IsNumber(id) ? id->valueint : 0);
         }
-        send_mcp_error(cJSON_IsNumber(id) ? id->valueint : 0);
     } else if (strcmp(type, "system") == 0) {
         cJSON *cmd = cJSON_GetObjectItem(root, "command");
         const char *v = cJSON_IsString(cmd) ? cmd->valuestring : "";
@@ -533,7 +551,11 @@ static void mic_task(void *arg)
             if (n > 0) {
                 int sent = esp_websocket_client_send_bin(s.ws, (const char *)s.opus_buf, n,
                                                          pdMS_TO_TICKS(500));
-                if (sent < 0) ESP_LOGW(TAG, "音频帧发送失败");
+                if (sent < 0) {
+                    ESP_LOGW(TAG, "音频帧发送失败");
+                } else if ((++s.frame_cnt % 50) == 0) {
+                    ESP_LOGI(TAG, "已上行 Opus 音频帧 %u", (unsigned)s.frame_cnt);
+                }
             } else {
                 ESP_LOGW(TAG, "opus_encode 失败：%d", n);
             }

@@ -238,7 +238,13 @@
           <span class="switch-track"><span class="switch-thumb"></span></span>
         </label>
       </div>
-      <label>服务端地址<input bind:value={cfg.voice_server_url} placeholder="wss://xiaozhi.example.com/ws" disabled={!cfg.voice_enabled} /></label>
+      <div class="setting-row">
+        <div><strong>当前语音服务</strong>
+          <span>{cfg.voice_server_url ? '自建服务：' + cfg.voice_server_url : '公共云服务（api.tenclass.net 自动换取地址）'}</span>
+        </div>
+        <span class="badge {cfg.voice_server_url ? 'warn' : 'ok'}">{cfg.voice_server_url ? '自建' : '公共云'}</span>
+      </div>
+      <label>服务端地址<input bind:value={cfg.voice_server_url} placeholder="留空=公共云，或填 wss://xiaozhi.example.com/ws" disabled={!cfg.voice_enabled} /></label>
       <label>设备 Token<input bind:value={cfg.voice_token} placeholder="留空不修改" disabled={!cfg.voice_enabled} /></label>
       <label>设备 ID / 激活码<input bind:value={cfg.voice_device_id} disabled={!cfg.voice_enabled} /></label>
       <label>唤醒词<input bind:value={cfg.voice_wake_word} disabled={!cfg.voice_enabled} /></label>

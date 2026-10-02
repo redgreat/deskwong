@@ -217,6 +217,22 @@ static void ui_update_task(void *arg) {
         /* RaceBox 同步弹窗：200ms 轮询，进度条才跟得上 */
         racebox_progress_t prog;
         racebox_service_progress(&prog);
+
+        /* 同步各阶段提示音：服务层只打点，声音放到这里播，
+         * 避免在 NimBLE 回调里阻塞通知消费。 */
+        racebox_sound_t snd = racebox_service_take_sound();
+        if (snd != RB_SND_NONE) {
+            switch (snd) {
+            case RB_SND_START:          audio_service_cue(AUDIO_CUE_START); break;
+            case RB_SND_DEVICE_FOUND:   audio_service_cue(AUDIO_CUE_DEVICE_FOUND); break;
+            case RB_SND_DOWNLOAD_DONE:  audio_service_cue(AUDIO_CUE_DOWNLOAD_DONE); break;
+            case RB_SND_UPLOAD_DONE:    audio_service_cue(AUDIO_CUE_UPLOAD_DONE); break;
+            case RB_SND_ERROR_DOWNLOAD:
+            case RB_SND_ERROR_UPLOAD:   audio_service_cue(AUDIO_CUE_ERROR); break;
+            case RB_SND_CANCEL:         audio_service_cue(AUDIO_CUE_CANCEL); break;
+            default: break;
+            }
+        }
         bool sync_busy = prog.state != RACEBOX_IDLE &&
                          prog.state != RACEBOX_DONE && prog.state != RACEBOX_FAILED;
         bool sync_terminal = prog.state == RACEBOX_DONE || prog.state == RACEBOX_FAILED;
