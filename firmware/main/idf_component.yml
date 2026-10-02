@@ -4,3 +4,6 @@ dependencies:
   lvgl/lvgl: "^8.4.0"
   espressif/mdns: "^1.4.0"
   espressif/esp_codec_dev: "~1.4.0"
+  # 小智语音链路：WebSocket 客户端 + Opus 编解码
+  espressif/esp_websocket_client: "^1.4.0"
+  78/esp-opus: "^1.0.5"

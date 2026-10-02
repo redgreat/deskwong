@@ -19,6 +19,7 @@
 #include "net_scheduler.h"
 #include "racebox_service.h"
 #include "app_mqtt.h"
+#include "voice_service.h"
 
 static const char *TAG = "httpd";
 static app_config_t *s_cfg = NULL;
@@ -322,6 +323,31 @@ static esp_err_t config_put_handler(httpd_req_t *req) {
                               : "MQTT 已关闭，配置已保存到设备 Flash，重启后生效");
 }
 
+/* 语音调试端点：不接硬件也能验证小智链路。
+ * 注意 start 会同步等待服务端 hello（最多 10 秒），期间 httpd 线程被占用。 */
+static esp_err_t voice_start_handler(httpd_req_t *req) {
+    if (!authed(req)) return send_err(req, 401, "unauthorized");
+    bool ok = voice_service_start();
+    const char *err = voice_service_last_error();
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddNumberToObject(o, "code", ok ? 0 : 1);
+    cJSON_AddStringToObject(o, "message", ok ? "语音会话已开始" : (err ? err : "启动失败"));
+    esp_err_t e = send_json(req, 0, o);
+    cJSON_Delete(o);
+    return e;
+}
+
+static esp_err_t voice_stop_handler(httpd_req_t *req) {
+    if (!authed(req)) return send_err(req, 401, "unauthorized");
+    voice_service_stop();
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddNumberToObject(o, "code", 0);
+    cJSON_AddStringToObject(o, "message", "语音会话已停止");
+    esp_err_t e = send_json(req, 0, o);
+    cJSON_Delete(o);
+    return e;
+}
+
 static esp_err_t restart_handler(httpd_req_t *req) {
     if (!authed(req)) return send_err(req, 401, "unauthorized");
     cJSON *o = cJSON_CreateObject();
@@ -495,6 +521,10 @@ esp_err_t http_server_start(app_config_t *cfg) {
     uri.uri = "/api/system/logs";          uri.method = HTTP_GET;  uri.handler = logs_handler;
     httpd_register_uri_handler(server, &uri);
     uri.uri = "/api/ota";                  uri.method = HTTP_POST; uri.handler = ota_handler;
+    httpd_register_uri_handler(server, &uri);
+    uri.uri = "/api/voice/start";          uri.method = HTTP_POST; uri.handler = voice_start_handler;
+    httpd_register_uri_handler(server, &uri);
+    uri.uri = "/api/voice/stop";           uri.method = HTTP_POST; uri.handler = voice_stop_handler;
     httpd_register_uri_handler(server, &uri);
     /* 静态资源兜底 */
     uri.uri = "/*";               uri.method = HTTP_GET;    uri.handler = static_handler;
