@@ -101,3 +101,7 @@ void Custom_ButtonInit(void) {
 uint8_t user_boot_get_repeat_count(void) {
     return (button_get_repeat_count(&BootButton));
 }
+
+uint8_t button_boot_pressed(void) {
+    return gpio_get_level(BOOT_KEY_PIN) == BOOT_Active ? 1 : 0;
+}

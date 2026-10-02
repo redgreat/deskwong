@@ -24,6 +24,9 @@ extern EventGroupHandle_t GP18ButtonGroups;
 
 void Custom_ButtonInit(void);
 
+/* BOOT（GPIO0）当前是否被按住：长按确认等需要直接读电平的场景用 */
+uint8_t button_boot_pressed(void);
+
 #ifdef __cplusplus
 }
 #endif
