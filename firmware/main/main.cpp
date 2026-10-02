@@ -29,10 +29,18 @@
 #include "racebox_service.h"
 #include "net_scheduler.h"
 #include "audio_service.h"
+#include "voice_service.h"
 #include "main_screen.h"
 #include "sync_screen.h"
 
 static const char *TAG = "main";
+
+/* 语音事件先打到日志，后续再接屏显/表情 */
+static void on_voice_event(const voice_event_t *ev, void *ctx) {
+    (void)ctx;
+    ESP_LOGI(TAG, "voice: state=%d text=%s emotion=%s", (int)ev->state,
+             ev->text ? ev->text : "-", ev->emotion ? ev->emotion : "-");
+}
 
 /* 原生横屏 400×300 单色反射屏 */
 static DisplayPort RlcdPort(RLCD_MOSI_PIN, RLCD_SCK_PIN, RLCD_DC_PIN, RLCD_CS_PIN, RLCD_RST_PIN, LCD_WIDTH, LCD_HEIGHT);
@@ -387,6 +395,10 @@ extern "C" void app_main(void) {
     racebox_service_init(g_cfg.racebox_upload_topic, g_cfg.racebox_auto_erase,
                          g_cfg.racebox_device_name, g_cfg.racebox_device_lock);
     audio_service_init();
+    /* 语音（小智）只初始化，不在这里联网：此时 WiFi 还没起来。
+     * 需要对话时用 POST /api/voice/start 触发。 */
+    voice_service_init(&g_cfg);
+    voice_service_set_event_cb(on_voice_event, NULL);
 
     RlcdPort.RLCD_Init();
     /* Push a known frame immediately so panel init is visible even before LVGL runs. */

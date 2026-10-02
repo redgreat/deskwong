@@ -81,6 +81,14 @@ void audio_service_set_volume(int vol) {
     if (s_playback) esp_codec_dev_set_out_vol(s_playback, vol);
 }
 
+void *audio_service_playback_handle(void) {
+    return (void *)s_playback;
+}
+
+void *audio_service_record_handle(void) {
+    return (void *)s_record;
+}
+
 void audio_service_beep(void) {
     if (s_playback == NULL) return;
     /* 0.15s 1kHz 正弦波，16kHz 2ch 16bit */
