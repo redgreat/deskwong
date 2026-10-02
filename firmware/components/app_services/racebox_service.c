@@ -46,6 +46,9 @@ static char s_device[64] = "";
 static int s_total = 0;
 static volatile int s_received = 0;
 static char s_message[64] = "";
+static volatile racebox_sound_t s_sound = RB_SND_NONE;
+/* 终态失败提示音只补一次，避免 200ms 轮询反复触发 */
+static bool s_fail_cue_done = false;
 static int64_t s_last_activity_us = 0;
 static int64_t s_started_us = 0;
 static uint8_t s_rx_stream[4096];
@@ -247,10 +250,14 @@ static void set_message(const char *fmt, ...) {
     va_end(ap);
 }
 
+/* 打点一个待播放的提示音事件，由 UI 任务取出后播放 */
+static void cue(racebox_sound_t s) { s_sound = s; }
+
 static void on_ble_disc(const char *name) {
     snprintf(s_device, sizeof(s_device), "%s", name);
     s_state = RACEBOX_CONNECTING;
     set_message("发现 %s", name);
+    cue(RB_SND_DEVICE_FOUND);   /* 搜到设备 */
 }
 
 static void on_ble_scan_done(void) {
@@ -327,6 +334,7 @@ static void handle_frame(const uint8_t *data, size_t len) {
             finish_success();
             s_state = RACEBOX_DONE;
             set_message("上传完成，设备数据已清理");
+            cue(RB_SND_UPLOAD_DONE);    /* 上传完成（含设备清理） */
             ESP_LOGI(TAG,"erase confirmed; daily points=%d internal_free=%u",
                      s_point_count,(unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
             racebox_ble_stop();
@@ -397,6 +405,7 @@ static void handle_frame(const uint8_t *data, size_t len) {
             s_download_done = true;
             s_state = RACEBOX_UPLOADING;
             set_message("下载完成，正在上传剩余数据");
+            cue(RB_SND_DOWNLOAD_DONE);  /* 下载完成 */
             ESP_LOGI(TAG, "download complete received=%d expected=%d chunks=%d cached_bytes=%u",
                      s_received, s_total, s_chunk_count,
                      (unsigned)((size_t)s_chunk_count * sizeof(racebox_record_chunk_t)));
@@ -515,6 +524,7 @@ static void upload_worker(void *arg) {
         if (ok && !start_erase) {
             finish_success();
             set_message(s_received ? "下载及上传完成" : "下载完成，无历史数据");
+            cue(RB_SND_UPLOAD_DONE);    /* 上传完成 */
         }
         ESP_LOGI(TAG,"summary downloaded=%d uploaded=%d auto_erase=%d",
                  s_received,s_uploaded,(int)s_auto_erase);
@@ -534,6 +544,8 @@ static void upload_worker(void *arg) {
             racebox_ble_start();
         } else {
             s_state = ok ? RACEBOX_DONE : RACEBOX_FAILED;
+            /* 上传出错 / 上传被中断，都在这里收口 */
+            if (!ok) cue(s_cancel_upload ? RB_SND_CANCEL : RB_SND_ERROR_UPLOAD);
         }
     }
     vTaskDelete(NULL);
@@ -637,7 +649,9 @@ void racebox_service_trigger(void) {
     s_started_us = esp_timer_get_time();
     s_device[0] = 0;
     s_state = RACEBOX_SCANNING;
+    s_fail_cue_done = false;
     set_message("搜索蓝牙设备...");
+    cue(RB_SND_START);          /* 开始下载 */
     racebox_ble_start();
     ESP_LOGI(TAG, "trigger: scanning RaceBox");
 }
@@ -649,11 +663,18 @@ void racebox_service_cancel(void) {
     racebox_ble_stop();
     s_state = RACEBOX_FAILED;
     set_message("同步已取消");
+    cue(RB_SND_CANCEL);         /* 手动中断 */
     ESP_LOGI(TAG, "sync cancelled by user");
 }
 
 racebox_state_t racebox_service_state(void) {
     return s_state;
+}
+
+racebox_sound_t racebox_service_take_sound(void) {
+    racebox_sound_t s = s_sound;
+    s_sound = RB_SND_NONE;
+    return s;
 }
 
 void racebox_service_progress(racebox_progress_t *out) {
@@ -671,6 +692,11 @@ void racebox_service_progress(racebox_progress_t *out) {
                     (was_querying ? "设备响应超时，请重试" : "下载超时，请重试"));
         ESP_LOGE(TAG, "transfer timeout received=%d expected=%d", s_received, s_total);
         racebox_ble_stop();
+    }
+    /* 设备侧 / 下载类出错点很多，统一在终态补一次出错提示音，只补一次 */
+    if (s_state == RACEBOX_FAILED && !s_fail_cue_done && s_sound == RB_SND_NONE) {
+        s_fail_cue_done = true;
+        cue(RB_SND_ERROR_DOWNLOAD);
     }
     out->uploaded=s_uploaded;
     out->elapsed_seconds=s_started_us > 0 ? (int)((esp_timer_get_time()-s_started_us)/1000000LL) : 0;

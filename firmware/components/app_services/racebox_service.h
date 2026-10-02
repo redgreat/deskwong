@@ -65,6 +65,22 @@ int racebox_service_point_count(void);
 bool racebox_service_synced_today(void);
 void racebox_service_day_tick(int year, int month, int day);
 
+/* 同步各阶段的提示音事件：由服务层打点，UI 任务取出后播放。
+ * 不能直接在 NimBLE 回调里播音——那会阻塞通知消费并耗尽 ACL 缓冲。 */
+typedef enum {
+    RB_SND_NONE = 0,
+    RB_SND_START,           /* 触发同步 / 开始下载 */
+    RB_SND_DEVICE_FOUND,    /* 搜到设备 */
+    RB_SND_DOWNLOAD_DONE,   /* 下载完成 */
+    RB_SND_UPLOAD_DONE,     /* 上传完成 */
+    RB_SND_ERROR_DOWNLOAD,  /* 设备侧 / 下载出错 */
+    RB_SND_ERROR_UPLOAD,    /* MQTT / 上传出错 */
+    RB_SND_CANCEL,          /* 手动中断同步 */
+} racebox_sound_t;
+
+/* 取出并清除一个待播放的提示音事件；没有则返回 RB_SND_NONE */
+racebox_sound_t racebox_service_take_sound(void);
+
 /* 上传 RBX2 二进制批次到 MQTT（QoS 1）；成功返回 0。 */
 int racebox_publish_raw_batch(const uint8_t *records, int offset, int count,
                               const uint8_t sync_id[16], int session_index,

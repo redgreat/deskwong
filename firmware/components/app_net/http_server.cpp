@@ -20,6 +20,7 @@
 #include "racebox_service.h"
 #include "app_mqtt.h"
 #include "voice_service.h"
+#include "audio_service.h"
 
 static const char *TAG = "httpd";
 static app_config_t *s_cfg = NULL;
@@ -355,6 +356,7 @@ static esp_err_t restart_handler(httpd_req_t *req) {
     cJSON_AddStringToObject(o, "message", "restarting");
     esp_err_t err = send_json(req, 0, o);
     cJSON_Delete(o);
+    audio_service_poweroff_sound();
     vTaskDelay(pdMS_TO_TICKS(200));
     esp_restart();
     return err;
@@ -368,6 +370,7 @@ static esp_err_t factory_reset_handler(httpd_req_t *req) {
     cJSON_AddStringToObject(o, "message", "factory reset, restarting");
     esp_err_t err = send_json(req, 0, o);
     cJSON_Delete(o);
+    audio_service_poweroff_sound();
     vTaskDelay(pdMS_TO_TICKS(200));
     esp_restart();
     return err;
@@ -428,6 +431,7 @@ static esp_err_t ota_handler(httpd_req_t *req) {
 
     ESP_LOGI(TAG, "OTA ok, %d bytes, restarting", received);
     send_err(req, 0, "ota ok, restarting");
+    audio_service_poweroff_sound();
     vTaskDelay(pdMS_TO_TICKS(300));
     esp_restart();
     return ESP_OK;
