@@ -8,7 +8,7 @@ static const char *TAG = "cfg";
 #define NVS_NS "deskwong"
 
 /* 配置结构版本号：新增出厂默认值时 +1，老设备升级后自动补齐一次 */
-#define CFG_VERSION 3
+#define CFG_VERSION 5
 
 /* 一次性迁移：老设备 NVS 里已有空值会盖掉出厂默认值，这里把关键字段补回来 */
 static void migrate(app_config_t *cfg, uint8_t stored_ver) {
@@ -20,6 +20,8 @@ static void migrate(app_config_t *cfg, uint8_t stored_ver) {
         strcpy(cfg->weather_key, "3062881a9edf45679f3dc304f7a17762");
     if (cfg->weather_location[0] == 0 || strcmp(cfg->weather_location, "北京") == 0)
         strcpy(cfg->weather_location, "101120201");
+    if (cfg->almanac_api_url[0] == 0)
+        strcpy(cfg->almanac_api_url, "https://ai.wongcw.cn/almanac");
     ESP_LOGW(TAG, "config migrated v%d -> v%d", stored_ver, CFG_VERSION);
 }
 
@@ -38,6 +40,8 @@ void app_config_defaults(app_config_t *cfg) {
     strcpy(cfg->weather_location, "101120201");   // LocationID，青岛；可在后台网页改成你的城市或 "经度,纬度"
     strcpy(cfg->weather_api_url, "https://nc2tujbtc3.re.qweatherapi.com/v7/weather/now");
     strcpy(cfg->weather_key, "3062881a9edf45679f3dc304f7a17762");
+    strcpy(cfg->almanac_api_url, "https://ai.wongcw.cn/almanac");   // 服务端内置黄历算法（lunar），无需注册
+    strcpy(cfg->almanac_key, "");
     cfg->weather_refresh_minutes = 30;
     strcpy(cfg->worktime_api_base, "");
     strcpy(cfg->worktime_token, "");
@@ -108,6 +112,8 @@ esp_err_t app_config_load(app_config_t *cfg) {
     get_str(h, "weather_loc", cfg->weather_location, sizeof(cfg->weather_location));
     get_str(h, "weather_url", cfg->weather_api_url, sizeof(cfg->weather_api_url));
     get_str(h, "weather_key", cfg->weather_key, sizeof(cfg->weather_key));
+    get_str(h, "alm_url", cfg->almanac_api_url, sizeof(cfg->almanac_api_url));
+    get_str(h, "alm_key", cfg->almanac_key, sizeof(cfg->almanac_key));
     nvs_get_u16(h, "weather_freq", &cfg->weather_refresh_minutes);
     if (cfg->weather_refresh_minutes < 5) cfg->weather_refresh_minutes = 5;
     get_str(h, "wt_base", cfg->worktime_api_base, sizeof(cfg->worktime_api_base));
@@ -188,6 +194,8 @@ esp_err_t app_config_save(const app_config_t *cfg) {
     if ((err = nvs_set_str(h, "weather_loc", cfg->weather_location)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_str(h, "weather_url", cfg->weather_api_url)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_str(h, "weather_key", cfg->weather_key)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_str(h, "alm_url", cfg->almanac_api_url)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_str(h, "alm_key", cfg->almanac_key)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_u16(h, "weather_freq", cfg->weather_refresh_minutes)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_str(h, "wt_base", cfg->worktime_api_base)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_str(h, "wt_token", cfg->worktime_token)) != ESP_OK) { nvs_close(h); return err; }

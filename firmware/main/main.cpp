@@ -33,6 +33,7 @@
 #include "voice_service.h"
 #include "main_screen.h"
 #include "sync_screen.h"
+#include "weather_almanac_screen.h"
 
 static const char *TAG = "main";
 
@@ -51,6 +52,7 @@ static app_config_t g_cfg;
 
 /* 外部服务数据缓存 */
 static weather_now_t g_weather;
+static weather_detail_t g_weather_detail;
 static worktime_summary_t g_worktime;
 static ai_provider_t g_ai[AI_MAX_PROVIDERS];
 static int g_ai_count = 0;
@@ -59,13 +61,22 @@ static uint8_t g_battery = 0;
 static volatile bool g_summary_dirty = false;
 /* 跨月或时间跳变后需要立刻重算工时（含应收工时） */
 static volatile bool g_worktime_stale = false;
+static volatile bool g_calendar_mode = false;
+static volatile bool g_calendar_dirty = false;
+static volatile int g_calendar_year = 0, g_calendar_month = 0;
+static volatile TickType_t g_calendar_last_action = 0;
+static volatile int g_worktime_year = 0, g_worktime_month = 0;
 
 static void Lvgl_FlushCallback(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_map) {
     static bool first_flush = true;
     static int dirty_x1 = LCD_WIDTH;
     static int dirty_x2 = -1;
+    static int dirty_y1 = LCD_HEIGHT;
+    static int dirty_y2 = -1;
     if (area->x1 < dirty_x1) dirty_x1 = area->x1;
     if (area->x2 > dirty_x2) dirty_x2 = area->x2;
+    if (area->y1 < dirty_y1) dirty_y1 = area->y1;
+    if (area->y2 > dirty_y2) dirty_y2 = area->y2;
     uint16_t *buffer = (uint16_t *)color_map;
     for (int y = area->y1; y <= area->y2; y++) {
         for (int x = area->x1; x <= area->x2; x++) {
@@ -77,7 +88,12 @@ static void Lvgl_FlushCallback(lv_disp_drv_t *drv, const lv_area_t *area, lv_col
     /* LVGL can flush several dirty areas in one refresh cycle. Update the
      * framebuffer for every area, but transfer it to the RLCD only once. */
     if (lv_disp_flush_is_last(drv)) {
-        if (first_flush || (dirty_x1 <= 0 && dirty_x2 >= LCD_WIDTH - 1)) {
+        /* 弹窗开合、整版日历这类大面积变化直接整屏传输：面板按列对局部窗口
+         * 写入，窗口两侧边界上会残留上一帧的内容（黄历弹窗隐藏后左缘留边）。
+         * 小面积（时钟跳动等）仍走列窗口，省下整屏传输的时间。 */
+        bool large_area = (dirty_x2 - dirty_x1 + 1) * (dirty_y2 - dirty_y1 + 1) >=
+                          LCD_WIDTH * LCD_HEIGHT / 4;
+        if (first_flush || large_area || (dirty_x1 <= 0 && dirty_x2 >= LCD_WIDTH - 1)) {
             RlcdPort.RLCD_Display();
         } else if (dirty_x1 <= dirty_x2) {
             int x1 = dirty_x1 < 0 ? 0 : dirty_x1;
@@ -90,6 +106,8 @@ static void Lvgl_FlushCallback(lv_disp_drv_t *drv, const lv_area_t *area, lv_col
         }
         dirty_x1 = LCD_WIDTH;
         dirty_x2 = -1;
+        dirty_y1 = LCD_HEIGHT;
+        dirty_y2 = -1;
     }
     lv_disp_flush_ready(drv);
 }
@@ -158,19 +176,29 @@ static void job_weather(void *ctx) {
         g_summary_dirty = true;
         ESP_LOGI(TAG, "weather refreshed");
     }
+    datetime_t now; time_service_now(&now);
+    /* g_weather 是同批实况：小时预报首条若跳过了当前小时，用它补位 */
+    if (weather_service_fetch_detail(&g_weather_detail, &g_weather,
+                                     now.year, now.month, now.day, now.hour) == 0 && Lvgl_lock(100)) {
+        weather_almanac_screen_update(&g_weather_detail);
+        Lvgl_unlock();
+    }
 }
 
 static void job_worktime(void *ctx) {
     datetime_t now;
     time_service_now(&now);
-    if (worktime_service_fetch(now.year, now.month, &g_worktime) != 0) {
+    int year = g_worktime_year ? g_worktime_year : now.year;
+    int month = g_worktime_month ? g_worktime_month : now.month;
+    if (worktime_service_fetch(year, month, &g_worktime) != 0) {
         /* 拉取失败：保留缓存/本地应收工时，屏幕不出现 -- */
         ESP_LOGW(TAG, "worktime refresh failed, keep %04d-%02d %.1f/%.1f",
                  g_worktime.year, g_worktime.month, g_worktime.recorded_hours, g_worktime.expected_hours);
-        if (g_worktime.year != now.year || g_worktime.month != now.month)
-            worktime_service_load(now.year, now.month, &g_worktime);
+        if (g_worktime.year != year || g_worktime.month != month)
+            worktime_service_load(year, month, &g_worktime);
     }
     g_summary_dirty = true;
+    g_calendar_dirty = true;
 }
 
 static void job_aiusage(void *ctx) {
@@ -205,10 +233,15 @@ static void network_service_task(void *arg) {
     }
 }
 
+/* 同步终态弹窗停留时长：40 * 200ms = 8 秒，之后自动收起，
+ * 否则失败/无数据这类需要看清的提示会一直挡着主屏。 */
+#define SYNC_TERMINAL_HOLD_TICKS 40
+
 static void ui_update_task(void *arg) {
     char date[16], time_str[12], lunar_full[32] = "";
     calendar_cell_t cells[42];
     uint32_t tick = 0;
+    uint32_t terminal_tick = 0;
     int last_day = -1;
     racebox_state_t last_sync_state = RACEBOX_IDLE;
     while (1) {
@@ -230,6 +263,7 @@ static void ui_update_task(void *arg) {
             case RB_SND_UPLOAD_DONE:    audio_service_cue(AUDIO_CUE_UPLOAD_DONE); break;
             case RB_SND_ERROR_DOWNLOAD:
             case RB_SND_ERROR_UPLOAD:   audio_service_cue(AUDIO_CUE_ERROR); break;
+            case RB_SND_NO_DATA:        audio_service_cue(AUDIO_CUE_NO_DATA); break;
             case RB_SND_CANCEL:         audio_service_cue(AUDIO_CUE_CANCEL); break;
             default: break;
             }
@@ -242,16 +276,53 @@ static void ui_update_task(void *arg) {
                 sync_screen_update(&prog);
                 Lvgl_unlock();
             }
-        } else if (sync_terminal && prog.state != last_sync_state) {
-            g_summary_dirty = true;
+            terminal_tick = 0;
+        } else if (sync_terminal) {
+            if (prog.state != last_sync_state) {
+                g_summary_dirty = true;
+                if (Lvgl_lock(100)) {
+                    sync_screen_update(&prog);
+                    /* 成功立即收起；失败/无数据要停留让人看清，超时后自动收起 */
+                    if (prog.state == RACEBOX_DONE) sync_screen_hide();
+                    else sync_screen_show();
+                    Lvgl_unlock();
+                }
+                terminal_tick = tick;
+            } else if (terminal_tick && tick - terminal_tick > SYNC_TERMINAL_HOLD_TICKS) {
+                if (Lvgl_lock(100)) {
+                    sync_screen_hide();
+                    Lvgl_unlock();
+                }
+                terminal_tick = 0;
+            }
+        } else {
+            terminal_tick = 0;
+        }
+        last_sync_state = prog.state;
+
+        if (g_calendar_mode && xTaskGetTickCount() - g_calendar_last_action > pdMS_TO_TICKS(30000)) {
+            g_calendar_mode = false;
+            g_worktime_year = dt.year; g_worktime_month = dt.month;
+            worktime_service_load(dt.year, dt.month, &g_worktime);
+            net_scheduler_request(NET_JOB_WORKTIME);
+            g_calendar_dirty = true;
+            ESP_LOGI(TAG, "calendar browse timeout -> main month");
+        }
+
+        if (g_calendar_dirty) {
+            g_calendar_dirty = false;
+            int cy = g_calendar_mode ? g_calendar_year : dt.year;
+            int cm = g_calendar_mode ? g_calendar_month : dt.month;
+            int selected_today = (cy == dt.year && cm == dt.month) ? dt.day : 0;
+            prepare_calendar(cy, cm, selected_today, cells);
+            snprintf(date, sizeof(date), "%04d-%02d-%02d", cy, cm, selected_today ? selected_today : 1);
             if (Lvgl_lock(100)) {
-                sync_screen_update(&prog);
-                if (prog.state == RACEBOX_DONE) sync_screen_hide();
-                else sync_screen_show();
+                main_screen_set_calendar_mode(g_calendar_mode);
+                main_screen_update_time(date, NULL, NULL, NULL);
+                main_screen_update_calendar(cells);
                 Lvgl_unlock();
             }
         }
-        last_sync_state = prog.state;
 
         /* 每秒：提醒轮询 + 时间/状态刷新 */
         if (tick % 5 == 0) {
@@ -283,7 +354,7 @@ static void ui_update_task(void *arg) {
         }
 
         /* Calendar and date change only at midnight. */
-        if (dt.day != last_day) {
+        if (dt.day != last_day && !g_calendar_mode) {
             snprintf(date, sizeof(date), "%04d-%02d-%02d", dt.year, dt.month, dt.day);
 
             lunar_date_t ld;
@@ -293,7 +364,9 @@ static void ui_update_task(void *arg) {
                 strcpy(lunar_full, "");
             }
 
-            prepare_calendar(dt.year, dt.month, dt.day, cells);
+            int cy = g_calendar_mode ? g_calendar_year : dt.year;
+            int cm = g_calendar_mode ? g_calendar_month : dt.month;
+            prepare_calendar(cy, cm, (cy == dt.year && cm == dt.month) ? dt.day : 0, cells);
             /* 跨月或 NTP 校时换了月份：工时汇总要按新月份重算 */
             if (g_worktime.year != dt.year || g_worktime.month != dt.month) g_worktime_stale = true;
 
@@ -311,7 +384,9 @@ static void ui_update_task(void *arg) {
             sensor_service_read(&g_temp, &g_humi);
             /* 工时拉取会改变每日进度条数据：与右上角汇总一起重画日历，
              * 否则新工时只更新总数，格子进度条要等到跨天才刷新。 */
-            prepare_calendar(dt.year, dt.month, dt.day, cells);
+            int cy = g_calendar_mode ? g_calendar_year : dt.year;
+            int cm = g_calendar_mode ? g_calendar_month : dt.month;
+            prepare_calendar(cy, cm, (cy == dt.year && cm == dt.month) ? dt.day : 0, cells);
             if (Lvgl_lock(100)) {
                 char weather[64];
                 if (g_weather.text[0])
@@ -349,23 +424,45 @@ static bool boot_still_held_ms(int ms) {
     return button_boot_pressed();
 }
 
+/* 注意：硬件按键断电是瞬间掉电，固件来不及在断电后播关机音；
+ * 之前"提前轮询按键播音"的做法会在按 KEY 触发 RaceBox 时误响，已移除。
+ * 关机音只用于软件重启路径（/api/system/restart）。 */
 static void button_task(void *arg) {
     while (1) {
-        /* KEY（GPIO18）单击 → 触发 RaceBox 采集；同步弹窗可见时再按一次收起 */
         EventBits_t bits = xEventGroupWaitBits(GP18ButtonGroups, 0x07, pdTRUE, pdFALSE, pdMS_TO_TICKS(500));
         if (bits & 0x04) {
             racebox_state_t state = racebox_service_state();
             if (state != RACEBOX_IDLE && state != RACEBOX_DONE && state != RACEBOX_FAILED) {
                 ESP_LOGI(TAG, "KEY long press -> cancel racebox sync");
                 racebox_service_cancel();
+            } else {
+                datetime_t now; time_service_now(&now);
+                g_calendar_mode = !g_calendar_mode;
+                g_calendar_year = now.year; g_calendar_month = now.month;
+                g_worktime_year = now.year; g_worktime_month = now.month;
+                worktime_service_load(now.year, now.month, &g_worktime);
+                g_calendar_last_action = xTaskGetTickCount(); g_calendar_dirty = true; g_summary_dirty = true;
+                if (Lvgl_lock(100)) { weather_almanac_screen_hide(); sync_screen_hide(); Lvgl_unlock(); }
+                net_scheduler_request(NET_JOB_WORKTIME);
+                ESP_LOGI(TAG, "KEY long press -> calendar browse %s", g_calendar_mode ? "on" : "off");
+                audio_service_cue(AUDIO_CUE_KEY_TOGGLE);
             }
         } else if (bits & 0x01) {
-            if (main_screen_remind_visible()) {
+            if (g_calendar_mode) {
+                int month = g_calendar_month - 1, year = g_calendar_year;
+                if (month < 1) { month = 12; year--; }
+                g_calendar_month = month; g_calendar_year = year;
+                g_worktime_year = g_calendar_year; g_worktime_month = g_calendar_month;
+                worktime_service_load(g_calendar_year, g_calendar_month, &g_worktime);
+                g_calendar_last_action = xTaskGetTickCount(); g_calendar_dirty = true; g_summary_dirty = true;
+                net_scheduler_request(NET_JOB_WORKTIME); audio_service_cue(AUDIO_CUE_KEY);
+            } else if (main_screen_remind_visible()) {
                 ESP_LOGI(TAG, "KEY click -> dismiss reminder");
                 if (Lvgl_lock(100)) {
                     main_screen_hide_remind();
                     Lvgl_unlock();
                 }
+                audio_service_cue(AUDIO_CUE_KEY);
             } else if (racebox_service_state() != RACEBOX_IDLE &&
                        racebox_service_state() != RACEBOX_DONE &&
                        racebox_service_state() != RACEBOX_FAILED) {
@@ -375,13 +472,17 @@ static void button_task(void *arg) {
                     Lvgl_unlock();
                 }
                 ESP_LOGI(TAG, "KEY click -> toggle sync panel");
+                /* 同步中短按只是收起/展开弹窗，与"强制结束"区分开 */
+                audio_service_cue(AUDIO_CUE_KEY_TOGGLE);
             } else if (sync_screen_visible()) {
                 if (Lvgl_lock(100)) { sync_screen_hide(); Lvgl_unlock(); }
                 ESP_LOGI(TAG, "KEY click -> dismiss sync summary");
+                audio_service_cue(AUDIO_CUE_KEY);
             } else {
                 ESP_LOGI(TAG, "KEY click -> racebox trigger");
                 racebox_service_trigger();
                 if (Lvgl_lock(100)) {
+                    weather_almanac_screen_hide();
                     sync_screen_show();
                     Lvgl_unlock();
                 }
@@ -391,9 +492,8 @@ static void button_task(void *arg) {
         /* BOOT（GPIO0）按住约 3 秒 → 不重启，直接叠加配网热点（APSTA 共存，
          * STA 照常连接）。之前"写标志+重启"的方案会在松手前把芯片带进下载
          * 模式（GPIO0 低电平复位），已废弃。 */
-        EventBits_t boot_bits = xEventGroupGetBits(BootButtonGroups);
+        EventBits_t boot_bits = xEventGroupWaitBits(BootButtonGroups, 0x07, pdTRUE, pdFALSE, 0);
         if (boot_bits & 0x04) {
-            xEventGroupClearBits(BootButtonGroups, 0x04);
             if (boot_still_held_ms(2000)) {
                 ESP_LOGW(TAG, "BOOT held ~3s -> start setup AP (no restart)");
                 audio_service_cue(AUDIO_CUE_CANCEL);
@@ -401,6 +501,28 @@ static void button_task(void *arg) {
             } else {
                 ESP_LOGI(TAG, "BOOT long press cancelled (released early)");
             }
+        } else if (boot_bits & 0x01) {
+            if (g_calendar_mode) {
+                int month = g_calendar_month + 1, year = g_calendar_year;
+                if (month > 12) { month = 1; year++; }
+                g_calendar_month = month; g_calendar_year = year;
+                g_worktime_year = g_calendar_year; g_worktime_month = g_calendar_month;
+                worktime_service_load(g_calendar_year, g_calendar_month, &g_worktime);
+                g_calendar_last_action = xTaskGetTickCount(); g_calendar_dirty = true; g_summary_dirty = true;
+                net_scheduler_request(NET_JOB_WORKTIME);
+            } else if (racebox_service_state() != RACEBOX_IDLE &&
+                       racebox_service_state() != RACEBOX_DONE &&
+                       racebox_service_state() != RACEBOX_FAILED) {
+                ESP_LOGI(TAG, "BOOT click ignored while RaceBox sync is active");
+            } else if (Lvgl_lock(100)) {
+                if (weather_almanac_screen_visible()) weather_almanac_screen_hide();
+                else {
+                    sync_screen_hide(); weather_almanac_screen_update(&g_weather_detail); weather_almanac_screen_show();
+                    net_scheduler_request(NET_JOB_WEATHER);
+                }
+                Lvgl_unlock();
+            }
+            audio_service_cue(AUDIO_CUE_KEY);
         }
     }
 }
@@ -420,7 +542,8 @@ extern "C" void app_main(void) {
     time_service_init(&I2cbus, g_cfg.timezone);
     sensor_service_init(&I2cbus);
 
-    weather_service_init(g_cfg.weather_api_url, g_cfg.weather_location, g_cfg.weather_key);
+    weather_service_init(g_cfg.weather_api_url, g_cfg.weather_location, g_cfg.weather_key,
+                         g_cfg.almanac_api_url, g_cfg.almanac_key);
     worktime_service_init(g_cfg.worktime_api_base, g_cfg.worktime_token);
     aiusage_service_init(g_cfg.aiusage_api_base, g_cfg.aiusage_token);
     /* 先用上次成功的月度汇总（没有就是 0 记录 + 本地应收工时）点亮屏幕，
@@ -452,6 +575,7 @@ extern "C" void app_main(void) {
     if (Lvgl_lock(-1)) {
         main_screen_init(LCD_WIDTH, LCD_HEIGHT);
         sync_screen_init(LCD_WIDTH, LCD_HEIGHT);
+        weather_almanac_screen_init(LCD_WIDTH, LCD_HEIGHT);
         Lvgl_unlock();
     }
 
@@ -475,9 +599,14 @@ extern "C" void app_main(void) {
     BaseType_t ui_ok = xTaskCreatePinnedToCoreWithCaps(
         ui_update_task, "ui", 8 * 1024, NULL, 3, NULL, 1,
         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    /* 按键路径会读 NVS（worktime 缓存）：关 flash 缓存期间 PSRAM 不可访问，
+     * PSRAM 栈的任务一执行 NVS/flash 就会触发 cache_utils 的
+     * esp_task_stack_is_sane_cache_disabled 断言复位——栈必须放内部 RAM
+     * （同 racebox_day worker 的处理）。 */
     BaseType_t button_ok = xTaskCreatePinnedToCoreWithCaps(
-        button_task, "btn", 4 * 1024, NULL, 3, NULL, 1,
-        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        button_task, "btn", 6 * 1024, NULL, 3, NULL, 1,
+        MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+
     /* 栈要给 TLS 握手 + gzip inflate(puff 约 2KB) 留足余量。该任务不做
      * flash/NVS 写入，放到 PSRAM 可释放 24KB 内部 RAM 给 WiFi、BLE 和 SPI DMA。 */
     BaseType_t network_ok = xTaskCreatePinnedToCoreWithCaps(
@@ -488,6 +617,7 @@ extern "C" void app_main(void) {
                  (long)ui_ok, (long)button_ok, (long)network_ok);
         abort();
     }
+
 
     ESP_LOGI(TAG, "boot done; internal free=%u PSRAM free=%u",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),

@@ -20,7 +20,10 @@ typedef enum {
     AUDIO_CUE_DOWNLOAD_DONE,   /* 下载完成 */
     AUDIO_CUE_UPLOAD_DONE,     /* 上传完成 */
     AUDIO_CUE_ERROR,           /* 下载 / 上传出错 */
+    AUDIO_CUE_NO_DATA,         /* 设备无定位数据 */
     AUDIO_CUE_CANCEL,          /* 手动中断 */
+    AUDIO_CUE_KEY,             /* 统一按键反馈音（无固定功能的按键操作） */
+    AUDIO_CUE_KEY_TOGGLE,      /* 同步中短按：收起 / 展开弹窗 */
 } audio_cue_t;
 void audio_service_cue(audio_cue_t cue);
 /* 设置扬声器音量 0-100 */

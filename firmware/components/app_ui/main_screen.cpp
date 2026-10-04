@@ -7,7 +7,28 @@
 #include <math.h>
 #include <time.h>
 
-static lv_obj_t *s_time, *s_year, *s_month, *s_status, *s_race_check, *s_points;
+static lv_obj_t *s_time, *s_year, *s_month, *s_status, *s_race_check, *s_points, *s_cal_icon;
+
+/* 迷你日历点阵 15x15（1-bit，MSB 在前，每行 2 字节）：
+ * 圆角边框圈 + 实心标题条（y1..3）+ 2×2 日期点（x3..5/x8..10，y6..8/y10..12） */
+static const uint8_t s_cal_icon_bits[] = {
+    0x3F, 0xF8,  /* ..###########.. */
+    0x7F, 0xFC,  /* .#############. */
+    0x7F, 0xFC,  /* .#############. */
+    0x7F, 0xFC,  /* .#############. */
+    0x40, 0x04,  /* .#...........#. */
+    0x40, 0x04,  /* .#...........#. */
+    0x5C, 0xE4,  /* .#.###..###..#. */
+    0x5C, 0xE4,  /* .#.###..###..#. */
+    0x5C, 0xE4,  /* .#.###..###..#. */
+    0x40, 0x04,  /* .#...........#. */
+    0x5C, 0xE4,  /* .#.###..###..#. */
+    0x5C, 0xE4,  /* .#.###..###..#. */
+    0x5C, 0xE4,  /* .#.###..###..#. */
+    0x40, 0x04,  /* .#...........#. */
+    0x3F, 0xF8,  /* ..###########.. */
+};
+static lv_img_dsc_t s_cal_icon_dsc;
 /* 工时摘要：数字行（已记/应记）+ 下方细条，右侧百分比胶囊。
  * 数字用 digits_18（与日期格一致），百分比用反白圆角胶囊（与状态栏 IP 胶囊呼应）。 */
 static lv_obj_t *s_total_num, *s_total_capsule, *s_total_pct_text;
@@ -224,6 +245,23 @@ void main_screen_init(int width, int height) {
     lv_obj_set_style_radius(s_points, 9, 0);
     lv_obj_set_style_pad_hor(s_points, 6, 0);
     lv_obj_set_style_pad_ver(s_points, 2, 0);
+    /* 日历翻页模式指示：15x15 迷你日历点阵（1-bit alpha，recolor 上黑）——
+     * 边框圈 + 实心标题条 + 2×2 日期点，贴在定位数量胶囊右侧，
+     * 进入日历模式才显示，退出即隐藏。单对象位图，不占 LVGL 池对象。 */
+    s_cal_icon_dsc.header.cf = LV_IMG_CF_ALPHA_1BIT;
+    s_cal_icon_dsc.header.always_zero = 0;
+    s_cal_icon_dsc.header.reserved = 0;
+    s_cal_icon_dsc.header.w = 15;
+    s_cal_icon_dsc.header.h = 15;
+    s_cal_icon_dsc.data_size = sizeof(s_cal_icon_bits);
+    s_cal_icon_dsc.data = s_cal_icon_bits;
+    s_cal_icon = lv_img_create(scr);
+    lv_obj_remove_style_all(s_cal_icon);
+    lv_img_set_src(s_cal_icon, &s_cal_icon_dsc);
+    lv_obj_set_style_img_recolor(s_cal_icon, lv_color_black(), 0);
+    lv_obj_set_style_img_recolor_opa(s_cal_icon, LV_OPA_COVER, 0);
+    lv_obj_align_to(s_cal_icon, s_points, LV_ALIGN_OUT_RIGHT_MID, 4, 0);
+    lv_obj_add_flag(s_cal_icon, LV_OBJ_FLAG_HIDDEN);
     box(scr, 278, 5, 1, 22, true);
     s_time = label(scr, "--:--:--", &lv_font_digits_28, 284, 1, 112);
     lv_obj_set_style_text_align(s_time, LV_TEXT_ALIGN_RIGHT, 0);
@@ -307,8 +345,14 @@ void main_screen_init(int width, int height) {
     lv_obj_set_style_pad_all(s_remind, 4, 0);
     lv_obj_add_flag(s_remind, LV_OBJ_FLAG_HIDDEN);
 }
-void main_screen_update_time(const char *date, const char *time, const char *week, const char *lunar) {
-    (void)week;
+/* 日历翻页模式指示：顶栏迷你日历图标显隐 */
+void main_screen_set_calendar_mode(bool on) {
+    if (!s_cal_icon) return;
+    if (on) lv_obj_clear_flag(s_cal_icon, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(s_cal_icon, LV_OBJ_FLAG_HIDDEN);
+}
+
+void main_screen_update_time(const char *date, const char *time, const char *week, const char *lunar) {    (void)week;
     if (date && strlen(date) >= 7) {
         char b[16]; snprintf(b, sizeof(b), "%.4s", date); text_changed(s_year, b);
         snprintf(b, sizeof(b), "%d", atoi(date+5)); text_changed(s_month, b);
@@ -374,6 +418,8 @@ void main_screen_update_summary(float recorded, float expected, const char *weat
     else if (points >= 1000) snprintf(b, sizeof(b), LV_SYMBOL_GPS " %.1fk", points/1000.0f);
     else snprintf(b, sizeof(b), LV_SYMBOL_GPS " %d", points < 0 ? 0 : points);
     text_changed(s_points, b);
+    /* 定位数变化后胶囊宽度会变，日历指示图标跟着重对齐 */
+    lv_obj_align_to(s_cal_icon, s_points, LV_ALIGN_OUT_RIGHT_MID, 4, 0);
     set_lunar(lunar);
     const char *newline = weather ? strchr(weather, '\n') : NULL;
     int temperature = 0, humidity = 0;

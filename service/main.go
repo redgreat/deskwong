@@ -1,6 +1,7 @@
 package main
 
 import (
+	"container/list"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/6tail/lunar-go/calendar"
 	"gopkg.in/yaml.v3"
 )
 
@@ -51,10 +53,10 @@ type Config struct {
 }
 
 type App struct {
-	cfg        Config
-	settings   *SettingsStore
-	restart    func()
-	client     *http.Client
+	cfg      Config
+	settings *SettingsStore
+	restart  func()
+	client   *http.Client
 
 	aiMu      sync.Mutex
 	aiCached  []byte
@@ -590,6 +592,45 @@ func (a *App) aiUsage(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(body)
 }
 
+// GET /almanac?date=YYYY-MM-DD
+// 黄历宜忌：内置 lunar 算法（github.com/6tail/lunar-go）本地计算，无第三方
+// 依赖、无配额。设备端解析兼容 {data:{yi,ji}}，date 缺省取服务器当日。
+func (a *App) almanac(w http.ResponseWriter, r *http.Request) {
+	day, err := almanacDate(r.URL.Query().Get("date"))
+	if err != nil {
+		jsonReply(w, http.StatusBadRequest, map[string]any{"code": 2001, "message": err.Error()})
+		return
+	}
+	lunar := calendar.NewSolarFromDate(day).GetLunar()
+	jsonReply(w, http.StatusOK, map[string]any{
+		"code": 0,
+		"data": map[string]any{
+			"date":   day.Format("2006-01-02"),
+			"yangli": day.Format("2006-01-02"),
+			"yinli":  lunar.String(),
+			"yi":     listToSlice(lunar.GetDayYi()),
+			"ji":     listToSlice(lunar.GetDayJi()),
+		},
+	})
+}
+
+// lunar-go 的宜忌返回 container/list，转成字符串数组方便 JSON 序列化
+func listToSlice(l *list.List) []string {
+	out := make([]string, 0, l.Len())
+	for e := l.Front(); e != nil; e = e.Next() {
+		out = append(out, fmt.Sprint(e.Value))
+	}
+	return out
+}
+
+func almanacDate(s string) (time.Time, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Now(), nil
+	}
+	return time.ParseInLocation("2006-01-02", s, time.Local)
+}
+
 func main() {
 	path := os.Getenv("DESKWONG_CONFIG")
 	if path == "" {
@@ -659,6 +700,8 @@ func runService(parent context.Context, cfg Config, store *SettingsStore) error 
 	})
 	mux.HandleFunc("GET /worktime/summary", app.authorize(app.worktime))
 	mux.HandleFunc("GET /ai/usage", app.authorize(app.aiUsage))
+	// 黄历为公开数据，不设鉴权；设备端默认地址即指向这里
+	mux.HandleFunc("GET /almanac", app.almanac)
 
 	server := &http.Server{Addr: cfg.Server.Listen, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() {

@@ -11,7 +11,7 @@
     wifi_ssid: '', wifi_pass: '',
     timezone: 'Asia/Shanghai', admin_user: 'admin', admin_pass: '',
     weather_location: '', weather_api_url: '',
-    weather_key: '', weather_refresh_minutes: 30,
+    weather_key: '', almanac_api_url: '', almanac_key: '', weather_refresh_minutes: 30,
     worktime_api_base: '', worktime_token: '', worktime_refresh_minutes: 30,
     aiusage_api_base: '', aiusage_token: '', aiusage_refresh_minutes: 10,
     mqtt_broker: '', mqtt_port: 1883, mqtt_user: '', mqtt_pass: '',
@@ -36,6 +36,7 @@
       if (cfg.wifi_pass === '******') cfg.wifi_pass = ''
       if (cfg.admin_pass === '******') cfg.admin_pass = ''
       if (cfg.weather_key === '******') cfg.weather_key = ''
+      if (cfg.almanac_key === '******') cfg.almanac_key = ''
       if (cfg.worktime_token === '******') cfg.worktime_token = ''
       if (cfg.aiusage_token === '******') cfg.aiusage_token = ''
       if (cfg.mqtt_pass === '******') cfg.mqtt_pass = ''
@@ -79,16 +80,33 @@
     onLogout()
   }
 
-  async function doRestart() {
-    if (confirm('确定重启设备？')) {
-      try { await api.restart() } catch (e) { error = e.message }
-    }
+  let confirmBox = null
+  function askConfirm(box) { confirmBox = box }
+  function closeConfirm() { confirmBox = null }
+  function acceptConfirm() {
+    const act = confirmBox && confirmBox.onOk
+    confirmBox = null
+    if (act) act()
   }
 
-  async function doFactoryReset() {
-    if (confirm('确定恢复出厂设置？所有配置将清空！')) {
-      try { await api.factoryReset() } catch (e) { error = e.message }
-    }
+  function doRestart() {
+    askConfirm({
+      title: '重启设备',
+      text: '设备将断开网络并重新启动，屏幕熄灭数秒后自动恢复。',
+      okText: '立即重启',
+      danger: true,
+      onOk: async () => { try { await api.restart() } catch (e) { error = e.message } },
+    })
+  }
+
+  function doFactoryReset() {
+    askConfirm({
+      title: '恢复出厂设置',
+      text: '所有配置（WiFi、服务地址、密钥等）将被清空，设备重启后回到初始状态。',
+      okText: '确认清空',
+      danger: true,
+      onOk: async () => { try { await api.factoryReset() } catch (e) { error = e.message } },
+    })
   }
 
   let otaFile = null
@@ -154,34 +172,30 @@
       <h2>天气</h2>
       <p class="section-help">
         默认走 <strong>Open-Meteo</strong>（免费、无需注册、无需 Key）：位置填「纬度,经度」即可，例如 <code>36.07,120.38</code>。
-        如果需要国内分钟级实况，再填和风天气的专属 API Host 与 Key（免费版每天约 1000~2000 次，本项目一天只请求几十次，完全够用）。
+        如果使用和风天气，请填写专属 API Host 与 Key。设备会同时请求实况、24 小时和 10 日预报；账号只开放 7 日预报时，第 8 天显示暂无。
         设备仅在 WiFi 已联网时请求，最低刷新周期 5 分钟。
       </p>
       <label>位置（经纬度，或和风 LocationID）<input bind:value={cfg.weather_location} placeholder="例如 36.07,120.38 或 101120201" /></label>
       <label>实时天气请求地址（留空用 Open-Meteo 默认地址）<input bind:value={cfg.weather_api_url} placeholder="https://api.open-meteo.com/v1/forecast 或 https://你的API-Host/v7/weather/now" /></label>
       <label>和风天气 Key（留空 = 使用免密钥 Open-Meteo）<input bind:value={cfg.weather_key} placeholder="留空不修改" /></label>
+      <label>黄历 API 地址（留空 = 服务端内置黄历）<input bind:value={cfg.almanac_api_url} placeholder="https://ai.wongcw.cn/almanac" /></label>
+      <label>黄历 API Key<input type="password" bind:value={cfg.almanac_key} placeholder="留空不修改" /></label>
+      <p class="muted">默认走服务端内置黄历算法（无需注册）；也可换聚合数据、TianAPI 等公共接口，GET 追加 <code>date/location/key</code>，兼容 <code>data.yi</code>/<code>result.yi</code>。</p>
       <label>天气刷新频率（分钟）<input type="number" bind:value={cfg.weather_refresh_minutes} min="5" max="1440" /></label>
     </section>
 
     <section>
-      <h2>工时（PingCode）</h2>
+      <h2>工时</h2>
       <label>API 地址<input bind:value={cfg.worktime_api_base} placeholder="http://host/worktime" /></label>
-      <p class="muted">工时数据从 PingCode 网页 API 获取，账号密码在服务端 config.yml 配置。</p>
-      <label>Token（与 AI 用量相同，填服务端 server.token）<input bind:value={cfg.worktime_token} placeholder="留空不修改" /></label>
+      <label>密钥<input type="password" bind:value={cfg.worktime_token} placeholder="留空不修改" /></label>
       <label>工时获取频率（分钟）<input type="number" bind:value={cfg.worktime_refresh_minutes} min="5" max="1440" /></label>
     </section>
 
     <section>
       <h2>AI 用量</h2>
-      <p class="section-help">ChatGPT/Codex 的 5 小时和每周订阅额度没有官方公开接口，不能直接填写 OpenAI API Key。这里连接你自己部署的聚合服务。</p>
-      <label>聚合 API 地址<input bind:value={cfg.aiusage_api_base} placeholder="例如 http://20.20.10.92:8001" /></label>
-      <label>Token（与工时相同，填服务端 server.token）<input bind:value={cfg.aiusage_token} placeholder="留空不修改" /></label>
+      <label>API 地址<input bind:value={cfg.aiusage_api_base} placeholder="例如 http://20.20.10.92:8001" /></label>
+      <label>密钥<input type="password" bind:value={cfg.aiusage_token} placeholder="留空不修改" /></label>
       <label>AI 用量刷新频率（分钟）<input type="number" bind:value={cfg.aiusage_refresh_minutes} min="1" max="1440" /></label>
-      <details class="api-help">
-        <summary>接口格式说明</summary>
-        <p>设备请求 <code>GET 地址/ai/usage</code>，Token 通过 Bearer 鉴权发送。服务应返回 5 小时和每周两个窗口。</p>
-        <code class="code-block">&#123;"data":&#123;"providers":[&#123;"id":"chatgpt_5h","window_minutes":300,"remaining_percent":72,"resets_at":1789223400&#125;,&#123;"id":"chatgpt_weekly","window_minutes":10080,"remaining_percent":44,"resets_at":1789741800&#125;]&#125;&#125;</code>
-      </details>
     </section>
 
     <section>
@@ -190,13 +204,12 @@
         <p class="muted">设备状态：{health.mqtt_message}</p>
       {/if}
       <label>Broker 地址<input bind:value={cfg.mqtt_broker} placeholder="例如 mqtt.example.com 或 mqtts://mqtt.example.com:8883" /></label>
-      <p class="muted">保存时设备会实际连接 Broker 并校验地址、端口和账号密码；校验失败不会覆盖原配置。保存成功后重启设备生效。</p>
       <label>端口<input type="number" bind:value={cfg.mqtt_port} /></label>
       <label>用户名<input bind:value={cfg.mqtt_user} /></label>
       <label>密码<input type="password" bind:value={cfg.mqtt_pass} placeholder="留空不修改" /></label>
       <label>上传主题 / 地址<input bind:value={cfg.racebox_upload_topic} placeholder="deskwong/racebox/data" /></label>
       <label>蓝牙设备名前缀<input bind:value={cfg.racebox_device_name} placeholder="RaceBox" /></label>
-      <label>锁定设备名（可选，填了就只连这一台）<input bind:value={cfg.racebox_device_lock} placeholder="例如 RaceBox Mini S/N 12345，留空则按前缀搜索" /></label>
+      <label>锁定设备名<input bind:value={cfg.racebox_device_lock} placeholder="例如 RaceBox Mini S/N 12345，留空则按前缀搜索" /></label>
       <div class="setting-row">
         <div>
           <strong>上传后清除内存</strong>
@@ -274,11 +287,6 @@
       </div>
     </section>
 
-    <p class="section-help">
-      天气 / 工时 / AI 用量三个定时拉取由设备内同一个调度器<strong>排队串行</strong>执行：到期的任务只是入队，
-      一次只跑一个，互不抢占网络；修改上面的频率会立即生效，无需重启。
-    </p>
-
     <div class="actions">
       <button class="button primary" type="submit" disabled={loading}>{loading ? '保存中...' : '保存配置'}</button>
       {#if saved}<span class="ok">已保存到设备 Flash，断电不丢失；重启设备后生效</span>{/if}
@@ -298,10 +306,28 @@
       </button>
     </div>
   </section>
+  {#if confirmBox}
+    <div class="modal-mask" role="presentation" on:click|self={closeConfirm}>
+      <div class="modal" role="dialog" aria-modal="true" aria-label={confirmBox.title}>
+        <h3>{confirmBox.title}</h3>
+        <p>{confirmBox.text}</p>
+        <div class="modal-actions">
+          <button class="button secondary" type="button" on:click={closeConfirm}>取消</button>
+          <button class="button {confirmBox.danger ? 'danger' : 'primary'}" type="button" on:click={acceptConfirm}>{confirmBox.okText}</button>
+        </div>
+      </div>
+    </div>
+  {/if}
 </div>
 
 <style>
-  .wrap { max-width: 800px; margin: 0 auto; padding: 28px 22px 48px; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 28px 22px 48px; }
+  .modal-mask { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; padding: 20px; background: rgba(2, 6, 16, .6); backdrop-filter: blur(3px); }
+  .modal { width: 100%; max-width: 400px; background: var(--card); border: 1px solid var(--border-subtle); border-radius: 16px; padding: 22px; box-shadow: var(--shadow); animation: modal-in .16s ease-out; }
+  @keyframes modal-in { from { opacity: 0; transform: translateY(8px) scale(.98); } to { opacity: 1; transform: none; } }
+  .modal h3 { margin: 0 0 10px; font-size: 16px; color: var(--text); }
+  .modal p { margin: 0 0 18px; color: var(--muted); font-size: 13px; line-height: 1.7; }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
   header { display: flex; justify-content: space-between; align-items: center; gap: 18px; margin-bottom: 22px; }
   .header-actions { display: flex; align-items: center; gap: 10px; }
   h1 { font-size: 23px; margin: 0 0 7px; letter-spacing: -.02em; }

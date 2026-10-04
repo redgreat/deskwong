@@ -25,6 +25,8 @@ typedef struct {
     char weather_location[CFG_STR_MAX];   // 城市或经纬度
     char weather_api_url[CFG_URL_MAX];    // 和风天气实时天气请求地址
     char weather_key[CFG_STR_MAX];        // 和风天气 Key
+    char almanac_api_url[CFG_URL_MAX];    // 黄历 API；GET date/location/key
+    char almanac_key[CFG_STR_MAX];        // 黄历 API Key
     uint16_t weather_refresh_minutes;     // 天气刷新周期，分钟
     /* 工时 */
     char worktime_api_base[CFG_URL_MAX];
