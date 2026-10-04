@@ -49,6 +49,8 @@ static char s_message[64] = "";
 static volatile racebox_sound_t s_sound = RB_SND_NONE;
 /* 终态失败提示音只补一次，避免 200ms 轮询反复触发 */
 static bool s_fail_cue_done = false;
+/* 被丢弃的"无定位"记录条数：用于区分"设备没数据"和"设备只有无定位数据" */
+static volatile int s_nofix = 0;
 static int64_t s_last_activity_us = 0;
 static int64_t s_started_us = 0;
 static uint8_t s_rx_stream[4096];
@@ -239,6 +241,18 @@ static void decode_record(const uint8_t *p, racebox_record_t *r) {
 }
 
 
+/* RaceBox 在没有定位时同样会吐出记录，但 fix_status 为 0（无定位）且经纬度为 0。
+ * 这类记录没有轨迹价值，若照单全收就会出现"下载到一条却没有定位"的假成功，
+ * 因此这里判定为无效，接收时直接丢弃。 */
+static bool record_has_fix(const uint8_t *raw) {
+    racebox_record_t r;
+    decode_record(raw, &r);
+    /* fix_status：0=无定位，1=仅航位推算，2=2D 定位，3=3D 定位 */
+    if (r.fix_status < 2) return false;
+    if (r.latitude == 0.0 && r.longitude == 0.0) return false;
+    return true;
+}
+
 /* UBX 风格命令（见 doc/SPECIFICATIONS.md §3，来自 racewong） */
 static const uint8_t CMD_DOWNLOAD[] = {0xB5, 0x62, 0xFF, 0x23, 0x00, 0x00, 0x22, 0x65};
 static const uint8_t CMD_ERASE[] = {0xB5, 0x62, 0xFF, 0x24, 0x00, 0x00, 0x23, 0x68};
@@ -267,6 +281,8 @@ static void on_ble_scan_done(void) {
         s_state = RACEBOX_FAILED;
         s_cancel_upload = true;
         set_message(was_erasing ? "上传完成，但未发现设备" : "未发现设备");
+        /* 未搜到设备要明确出声，别静默（原来靠终态兜底，重启时会被吞掉） */
+        cue(RB_SND_ERROR_DOWNLOAD);
         ESP_LOGW(TAG, "no RaceBox device found");
     }
 }
@@ -378,6 +394,11 @@ static void handle_frame(const uint8_t *data, size_t len) {
     } else if (data[3] == 0x21 || data[3] == 0x01) {
         if (plen != RACEBOX_RAW_RECORD_SIZE || (s_total > 0 && s_received >= s_total)) {
             s_state = RACEBOX_FAILED; set_message("数据长度异常"); racebox_ble_stop(); return;
+        }
+        if (!record_has_fix(data + 6)) {
+            /* 无定位记录：不入库、不计数，结束时统一提示"无定位数据" */
+            s_nofix++;
+            return;
         }
         if (!s_open_session && !start_session(data + 6)) {
             s_cancel_upload=true; s_state = RACEBOX_FAILED; set_message("轨迹分段内存不足"); racebox_ble_stop(); return;
@@ -522,9 +543,19 @@ static void upload_worker(void *arg) {
         }
         bool start_erase = ok && s_download_done && s_received && s_auto_erase;
         if (ok && !start_erase) {
-            finish_success();
-            set_message(s_received ? "下载及上传完成" : "下载完成，无历史数据");
-            cue(RB_SND_UPLOAD_DONE);    /* 上传完成 */
+            if (!s_received && s_nofix) {
+                /* 设备里只有无定位记录：不算同步成功，
+                 * 走 FAILED 让提示界面停留（DONE 会被自动收起、看不见提示）。 */
+                /* 文案用"无位置数据"：字体子集里没有"定"字，会渲染成方块 */
+                set_message("无位置数据");
+                cue(RB_SND_NO_DATA);
+                ESP_LOGW(TAG, "no positioning data: dropped %d record(s) without fix", s_nofix);
+                ok = false;
+            } else {
+                finish_success();
+                set_message(s_received ? "下载及上传完成" : "下载完成，无历史数据");
+                cue(RB_SND_UPLOAD_DONE);    /* 上传完成 */
+            }
         }
         ESP_LOGI(TAG,"summary downloaded=%d uploaded=%d auto_erase=%d",
                  s_received,s_uploaded,(int)s_auto_erase);
@@ -544,8 +575,9 @@ static void upload_worker(void *arg) {
             racebox_ble_start();
         } else {
             s_state = ok ? RACEBOX_DONE : RACEBOX_FAILED;
-            /* 上传出错 / 上传被中断，都在这里收口 */
-            if (!ok) cue(s_cancel_upload ? RB_SND_CANCEL : RB_SND_ERROR_UPLOAD);
+            /* 上传出错 / 上传被中断，都在这里收口；
+             * 无定位已单独打点，不要再覆盖成"出错" */
+            if (!ok && s_sound == RB_SND_NONE) cue(s_cancel_upload ? RB_SND_CANCEL : RB_SND_ERROR_UPLOAD);
         }
     }
     vTaskDelete(NULL);
@@ -650,6 +682,7 @@ void racebox_service_trigger(void) {
     s_device[0] = 0;
     s_state = RACEBOX_SCANNING;
     s_fail_cue_done = false;
+    s_nofix = 0;
     set_message("搜索蓝牙设备...");
     cue(RB_SND_START);          /* 开始下载 */
     racebox_ble_start();

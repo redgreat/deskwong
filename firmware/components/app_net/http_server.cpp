@@ -132,6 +132,8 @@ static esp_err_t config_get_handler(httpd_req_t *req) {
     cJSON_AddStringToObject(d, "weather_location", stored.weather_location);
     cJSON_AddStringToObject(d, "weather_api_url", stored.weather_api_url);
     cJSON_AddStringToObject(d, "weather_key", stored.weather_key[0] ? "******" : "");
+    cJSON_AddStringToObject(d, "almanac_api_url", stored.almanac_api_url);
+    cJSON_AddStringToObject(d, "almanac_key", stored.almanac_key[0] ? "******" : "");
     cJSON_AddNumberToObject(d, "weather_refresh_minutes", stored.weather_refresh_minutes);
     cJSON_AddStringToObject(d, "worktime_api_base", stored.worktime_api_base);
     cJSON_AddStringToObject(d, "worktime_token", stored.worktime_token[0] ? "******" : "");
@@ -220,6 +222,12 @@ static esp_err_t config_put_handler(httpd_req_t *req) {
     if (it && cJSON_IsString(it) && it->valuestring[0] && strcmp(it->valuestring, "******") != 0) {
         strncpy(pending.weather_key, it->valuestring, sizeof(pending.weather_key) - 1);
         pending.weather_key[sizeof(pending.weather_key) - 1] = 0;
+    }
+    set_str_field(j, "almanac_api_url", pending.almanac_api_url, sizeof(pending.almanac_api_url));
+    it = cJSON_GetObjectItem(j, "almanac_key");
+    if (it && cJSON_IsString(it) && it->valuestring[0] && strcmp(it->valuestring, "******") != 0) {
+        strncpy(pending.almanac_key, it->valuestring, sizeof(pending.almanac_key) - 1);
+        pending.almanac_key[sizeof(pending.almanac_key) - 1] = 0;
     }
     it = cJSON_GetObjectItem(j, "weather_refresh_minutes");
     if (it && cJSON_IsNumber(it)) {
@@ -323,14 +331,18 @@ static esp_err_t config_put_handler(httpd_req_t *req) {
     }
     cJSON_Delete(j);
     if (app_config_save(&pending) != ESP_OK) return send_err(req, 500, "配置保存失败");
+    /* RaceBox 的上传主题 / 自动清理 / 设备过滤立即热生效，不用等重启；
+     * 否则"上传后清除内存"开关打开后要等到下次重启才起作用，同步后不会清理。 */
+    racebox_service_reconfigure(pending.racebox_upload_topic, pending.racebox_auto_erase,
+                                pending.racebox_device_name, pending.racebox_device_lock);
     if (pending.mqtt_broker[0]) {
         char msg[224];
-        snprintf(msg, sizeof(msg), "配置已保存到设备 Flash，重启后生效。MQTT：%s",
+        snprintf(msg, sizeof(msg), "配置已保存，RaceBox 设置立即生效；MQTT 连接重启后切换：%s",
                  mqtt_tested ? (mqtt_check[0] ? mqtt_check : "校验完成")
                              : "设备当前离线，未校验");
         return send_err(req, 0, msg);
     }
-    return send_err(req, 0, "MQTT 已关闭，配置已保存到设备 Flash，重启后生效");
+    return send_err(req, 0, "MQTT 已关闭，配置已保存，RaceBox 设置立即生效");
 }
 
 /* 语音调试端点：不接硬件也能验证小智链路。

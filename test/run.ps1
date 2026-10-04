@@ -43,6 +43,16 @@ try {
 } finally {
     if (Test-Path -LiteralPath $holidayExe) { Remove-Item -LiteralPath $holidayExe -Force }
 }
+$weatherHour = Join-Path $PSScriptRoot "firmware/weather_hour"
+$weatherHourExe = Join-Path ([IO.Path]::GetTempPath()) ("deskwong-weather-hour-test-" + [guid]::NewGuid().ToString("N") + ".exe")
+try {
+    & gcc -std=c11 -O0 -g -I $services (Join-Path $weatherHour "weather_hour_test.c") -o $weatherHourExe
+    if ($LASTEXITCODE) { throw "Weather hourly host test compilation failed" }
+    & $weatherHourExe
+    if ($LASTEXITCODE) { throw "Weather hourly host test failed" }
+} finally {
+    if (Test-Path -LiteralPath $weatherHourExe) { Remove-Item -LiteralPath $weatherHourExe -Force }
+}
 $wifiReason = Join-Path $PSScriptRoot "firmware/wifi_reason"
 $wifiExe = Join-Path ([IO.Path]::GetTempPath()) ("deskwong-wifi-reason-test-" + [guid]::NewGuid().ToString("N") + ".exe")
 try {
@@ -63,6 +73,29 @@ try {
 } finally {
     if (Test-Path -LiteralPath $portalExe) { Remove-Item -LiteralPath $portalExe -Force }
 }
+$fontAudit = Join-Path $repo "tools/audit_ui_fonts.py"
+& python $fontAudit
+if ($LASTEXITCODE) { throw "UI font audit failed" }
+
+$uiSource = Join-Path $PSScriptRoot "ui_preview"
+$uiBuild = Join-Path $repo "build/ui_preview"
+& cmake -S $uiSource -B $uiBuild
+if ($LASTEXITCODE) { throw "UI preview configure failed" }
+& cmake --build $uiBuild --config Release
+if ($LASTEXITCODE) { throw "UI preview build failed" }
+$uiExe = Join-Path $uiBuild "ui_preview.exe"
+if (!(Test-Path -LiteralPath $uiExe)) { $uiExe = Join-Path $uiBuild "Release/ui_preview.exe" }
+$uiOut = Join-Path $repo "build/ui_preview/states"
+New-Item -ItemType Directory -Force -Path $uiOut | Out-Null
+& $uiExe (Join-Path $uiOut "normal.pgm") 9
+& $uiExe (Join-Path $uiOut "six-row.pgm") 8
+& $uiExe (Join-Path $uiOut "empty.pgm") 9 empty
+& $uiExe (Join-Path $uiOut "sync.pgm") 9 sync
+& $uiExe (Join-Path $uiOut "weather.pgm") 10 weather
+& $uiExe (Join-Path $uiOut "weather-empty.pgm") 10 weather-empty
+& $uiExe (Join-Path $uiOut "weather-overflow.pgm") 10 weather-overflow
+& $uiExe (Join-Path $uiOut "cal.pgm") 9 cal
+if ($LASTEXITCODE) { throw "UI preview rendering failed" }
 $forbidden = @(
     Get-ChildItem -LiteralPath (Join-Path $repo "service") -Filter "*_test.go" -File -ErrorAction SilentlyContinue
     Get-ChildItem -LiteralPath (Join-Path $repo "firmware/components") -Filter "*_test.*" -File -Recurse -ErrorAction SilentlyContinue

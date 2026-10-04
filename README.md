@@ -87,12 +87,15 @@ python -m esptool --chip esp32s3 -b 460800 -p COM3 write_flash ^
 5. 换网络/换环境时：**长按 BOOT 约 3 秒**听到提示音，设备**立即**开放 `deskwong-setup` 配网热点——不重启、不清配置，原 WiFi 继续连接；热点仅本次开机内有效。手机连接后在后台改好 WiFi，重启生效。
 6. 网页认证（captive portal）网络：连接 `deskwong-setup` 后用手机浏览器打开 `http://192.168.4.1/p/start`，设备会探测门户并把认证页代理到热点内（认证请求从设备自身发出，放行落在设备上）。完成后用 `http://192.168.4.1/p/check` 确认放行状态。
 
+运行时按键：主屏短按 KEY 同步 RaceBox；RaceBox 空闲时长按 KEY 进入/退出日历翻页，翻页中短按 KEY/BOOT 查看上月/下月；普通主屏短按 BOOT 开关天气黄历弹窗。长按 BOOT 仍开启配网热点；断电时按住 BOOT 再按 PWR 上电仍进入刷机模式。
+
 ## 外部接口契约（用户侧实现）
 
 | 接口 | 契约 | 文档 |
 | --- | --- | --- |
 | 工时 API | `GET {base}/worktime/summary?year=&month=`，Bearer Token | `doc/SPECIFICATIONS.md` §2.1 |
 | AI 用量 API | `GET {base}/ai/usage`，Bearer Token | `doc/SPECIFICATIONS.md` §2.2 |
+| 黄历 API | `GET {url}?date=&location=&key=`，返回 `data.yi`/`data.ji` | `doc/SPECIFICATIONS.md` §2.3 |
 | RaceBox MQTT | 发布到 `deskwong/racebox/data`（QoS 1） | `doc/SPECIFICATIONS.md` §4 |
 | 天气 | 和风天气 / Open-Meteo | `doc/REQUIREMENTS.md` §4 |
 

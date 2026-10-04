@@ -44,6 +44,7 @@ int main(void){
  uint8_t max[4]={3,0,0,0};frame(0x23,max,4);
  uint8_t record[80]={0};record[4]=0xea;record[5]=7;record[6]=9;record[7]=25;
  record[20]=3;record[23]=12;record[48]=0xe8;record[49]=3; // 1000 mm/s
+ record[24]=1;record[28]=1; // 非零经纬度：坐标全 0 会被无定位过滤当作无效记录丢弃
  frame(0x01,record,80);assert(s_received==1);
  frame(0x21,record,80);assert(s_received==2);
  uint8_t copied[18*80];assert(copy_record_range(0,1,copied));
@@ -88,6 +89,17 @@ int main(void){
  frame(0x02,ack,2);upload_worker(NULL);
  assert(publish_calls==2 && published_session_index[0]==0 && published_session_index[1]==1);
  assert(published_session_total[0]==2 && published_session_total[1]==2);
+ // 无定位记录（fix_status<2 或经纬度全 0）不入库；整次同步只有无定位记录时按失败收口并提示。
+ racebox_service_trigger();s_state=RACEBOX_DOWNLOADING;publish_calls=0;fail_on_call=0;connected=true;
+ max[0]=3;max[1]=max[2]=max[3]=0;frame(0x23,max,4);
+ uint8_t nofix[80];memcpy(nofix,record,80);nofix[20]=0; // fix_status=0：无定位
+ frame(0x01,nofix,80);assert(s_received==0 && s_nofix==1);
+ uint8_t zeropos[80];memcpy(zeropos,record,80);zeropos[24]=0;zeropos[28]=0; // 3D 修复但坐标全 0
+ frame(0x01,zeropos,80);assert(s_received==0 && s_nofix==2);
+ frame(0x02,ack,2);assert(s_download_done);
+ upload_worker(NULL);
+ assert(s_state==RACEBOX_FAILED && s_uploaded==0 && publish_calls==0);
+ assert(!strcmp(s_message,"无位置数据") && s_sound==RB_SND_NO_DATA);
  racebox_service_trigger();s_state=RACEBOX_DOWNLOADING;
  max[0]=0x51;max[1]=0xc3;max[2]=0;max[3]=0;frame(0x23,max,4);
  assert(s_state==RACEBOX_DOWNLOADING && s_total==50001 && s_chunk_count==0);

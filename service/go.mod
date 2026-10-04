@@ -3,6 +3,7 @@ module github.com/redgreat/deskwong/service
 go 1.25
 
 require (
+	github.com/6tail/lunar-go v1.4.6
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.36.3
 )

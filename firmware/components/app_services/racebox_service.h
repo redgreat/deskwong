@@ -75,6 +75,7 @@ typedef enum {
     RB_SND_UPLOAD_DONE,     /* 上传完成 */
     RB_SND_ERROR_DOWNLOAD,  /* 设备侧 / 下载出错 */
     RB_SND_ERROR_UPLOAD,    /* MQTT / 上传出错 */
+    RB_SND_NO_DATA,         /* 设备无定位数据 */
     RB_SND_CANCEL,          /* 手动中断同步 */
 } racebox_sound_t;
 

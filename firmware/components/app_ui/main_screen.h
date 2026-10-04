@@ -24,6 +24,8 @@ typedef struct {
 } calendar_cell_t;
 
 void main_screen_init(int width, int height);
+/* 日历翻页模式：顶栏定位数量右侧显示迷你日历图标 */
+void main_screen_set_calendar_mode(bool on);
 void main_screen_update_time(const char *date, const char *time, const char *week, const char *lunar);
 /* cells uses Monday as the first column. */
 void main_screen_update_calendar(const calendar_cell_t cells[42]);
