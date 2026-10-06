@@ -37,6 +37,10 @@ type Config struct {
 		Username string `yaml:"username" json:"username"`
 		Password string `yaml:"password" json:"password"`
 	} `yaml:"server" json:"server"`
+	Context struct {
+		ReportToken string `yaml:"report_token" json:"report_token"`
+		ReadToken   string `yaml:"read_token" json:"read_token"`
+	} `yaml:"context" json:"context"`
 	Worktime struct {
 		// 通过 PingCode 网页 API 获取工时；数据源配置只在 conf/config.yml。
 		PingCode struct {
@@ -679,6 +683,12 @@ func main() {
 			pc.TimeoutSec = 20
 		}
 		cfg.Worktime.PingCode = pc
+		if cfg.Context.ReportToken == "" {
+			cfg.Context.ReportToken = cfg.Server.Token
+		}
+		if cfg.Context.ReadToken == "" {
+			cfg.Context.ReadToken = cfg.Server.Token
+		}
 		setupLogger(cfg)
 		if err := runService(ctx, cfg, store); err != nil {
 			slog.Error("service", "error", err)
@@ -702,6 +712,8 @@ func runService(parent context.Context, cfg Config, store *SettingsStore) error 
 	mux.HandleFunc("GET /ai/usage", app.authorize(app.aiUsage))
 	// 黄历为公开数据，不设鉴权；设备端默认地址即指向这里
 	mux.HandleFunc("GET /almanac", app.almanac)
+	mux.HandleFunc("POST /voice/context/report", app.contextReport)
+	mux.HandleFunc("GET /voice/context", app.contextRead)
 
 	server := &http.Server{Addr: cfg.Server.Listen, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() {

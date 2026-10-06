@@ -216,6 +216,8 @@ void main_screen_init(int width, int height) {
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
     s_grid_height = height - 88 - 4;
+    /* 顶部状态栏有效区 y=0..31，视觉中心线 y=16。图标与小字本身已经
+     * 围绕该中心排列；IP 胶囊和 28px 数字字体按实际墨迹边界做下移补偿。 */
     s_status = label(scr, LV_SYMBOL_BATTERY_FULL " --%  " LV_SYMBOL_WIFI, &lv_font_montserrat_14, 7, 9, 90);
     s_bell = label(scr, LV_SYMBOL_BELL, &lv_font_montserrat_14, 98, 9);
     lv_obj_add_flag(s_bell, LV_OBJ_FLAG_HIDDEN);
@@ -225,7 +227,7 @@ void main_screen_init(int width, int height) {
     lv_obj_set_style_img_recolor_opa(race, LV_OPA_COVER, 0); lv_obj_set_pos(race, 125, 4);
     s_race_img = race;
     /* 离线（AP 模式）时显示后台地址胶囊，让用户知道连哪个 IP 去配网 */
-    s_ip = label(scr, "", &lv_font_zh_10, 125, 5, 0);
+    s_ip = label(scr, "", &lv_font_zh_10, 125, 6, 0);
     lv_obj_set_style_border_width(s_ip, 2, 0);
     lv_obj_set_style_border_color(s_ip, lv_color_black(), 0);
     lv_obj_set_style_border_opa(s_ip, LV_OPA_COVER, 0);
@@ -263,7 +265,7 @@ void main_screen_init(int width, int height) {
     lv_obj_align_to(s_cal_icon, s_points, LV_ALIGN_OUT_RIGHT_MID, 4, 0);
     lv_obj_add_flag(s_cal_icon, LV_OBJ_FLAG_HIDDEN);
     box(scr, 278, 5, 1, 22, true);
-    s_time = label(scr, "--:--:--", &lv_font_digits_28, 284, 1, 112);
+    s_time = label(scr, "--:--:--", &lv_font_digits_28, 284, 3, 112);
     lv_obj_set_style_text_align(s_time, LV_TEXT_ALIGN_RIGHT, 0);
     box(scr, 6, 32, width-12, 2, true);
 
@@ -275,7 +277,7 @@ void main_screen_init(int width, int height) {
     /* 本月工时：左侧「已记/应记」数字行（digits_18，与下方进度条左对齐 x=180），右侧反白圆角百分比胶囊 */
     s_total_num = label(scr, "0/0", &lv_font_digits_18, 180, 44, 80);
     lv_obj_set_style_text_align(s_total_num, LV_TEXT_ALIGN_LEFT, 0);
-    lv_obj_t *capsule_box = capsule(scr, "0%", &lv_font_montserrat_14, 241, 44);
+    lv_obj_t *capsule_box = capsule(scr, "0%", &lv_font_montserrat_14, 241, 39);
     s_total_capsule = capsule_box;
     s_total_pct_text = lv_obj_get_child(capsule_box, 0);
     capsule_refresh(s_total_capsule, s_total_pct_text, "0%", 299, 20);

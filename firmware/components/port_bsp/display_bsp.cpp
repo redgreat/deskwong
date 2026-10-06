@@ -63,6 +63,9 @@ height_(height)
     DisplayLen                = transfer >> 3; //(1byte 8ipex)
     DispBuffer                = (uint8_t *) heap_caps_malloc(DisplayLen, MALLOC_CAP_SPIRAM);
     assert(DispBuffer);
+    DmaBuffer                 = (uint8_t *) heap_caps_malloc(1024,
+                                      MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
+    assert(DmaBuffer);
 
 #if (AlgorithmOptimization == 3)
 	PixelIndexLUT = (uint16_t (*)[300])heap_caps_malloc(transfer * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
@@ -251,16 +254,28 @@ void DisplayPort::RLCD_SendData(uint8_t Data) {
 }
 
 void DisplayPort::RLCD_Sendbuffera(uint8_t *Data, int len) {
-    /* tx_color is asynchronous. Drain a stale signal, queue one frame, then
-     * wait for its completion callback before DispBuffer can be modified. */
-    xSemaphoreTake(color_done_sem, 0);
-    esp_err_t err = esp_lcd_panel_io_tx_color(io_handle, -1, Data, len);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "display transfer queue failed: %s", esp_err_to_name(err));
-        return;
-    }
-    if (xSemaphoreTake(color_done_sem, pdMS_TO_TICKS(1000)) != pdTRUE) {
-        ESP_LOGE(TAG, "display transfer timed out");
+    /* The SPI LCD driver may need an internal DMA-capable bounce buffer. A
+     * whole 400px-wide update is about 7.5KB and competes with the resident
+     * WebSocket stack, so send the already-selected LCD window in smaller
+     * consecutive chunks. The controller keeps advancing its write cursor. */
+    static constexpr int kMaxChunk = 1024;
+    for (int offset = 0; offset < len; offset += kMaxChunk) {
+        int chunk = len - offset;
+        if (chunk > kMaxChunk) chunk = kMaxChunk;
+        memcpy(DmaBuffer, Data + offset, chunk);
+        xSemaphoreTake(color_done_sem, 0);
+        esp_err_t err = esp_lcd_panel_io_tx_color(io_handle, -1, DmaBuffer, chunk);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "display transfer queue failed: %s (chunk=%d 内部空闲=%u 最大连续=%u)",
+                     esp_err_to_name(err), chunk,
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+            return;
+        }
+        if (xSemaphoreTake(color_done_sem, pdMS_TO_TICKS(1000)) != pdTRUE) {
+            ESP_LOGE(TAG, "display transfer timed out (chunk=%d)", chunk);
+            return;
+        }
     }
 }
 

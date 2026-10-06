@@ -8,11 +8,12 @@
 <div id="notice" role="status" aria-live="polite"></div>
 <form id="settings" hidden>
 <section><h2>工时</h2><small>PingCode 域名与账号密码在服务端 conf/config.yml 的 worktime.pingcode 配置（改后重启服务生效），不在本页修改。设备端填本服务地址与 server.token 即可调取工时结果；每日标准工时固定 8 小时。</small></section>
+<section><h2>小智上下文</h2><div class="grid"><label>开发板上报 Token<input id="contextreport" type="password" autocomplete="new-password"></label><label>小智读取 Token<input id="contextread" type="password" autocomplete="new-password"></label></div><small>两个 Token 分离授权；以 ****** 显示时直接保存会保留原值。智控台上下文源只使用读取 Token。</small></section>
 <section><h2>管理账号</h2><div class="grid"><label>账号<input id="adminuser" autocomplete="off" required></label><label>密码<input id="adminpass" type="password" autocomplete="new-password" required></label></div><small>监听端口与设备访问 Token 在 config.yml 中固定，修改后需编辑配置文件并重启服务；密码以 ****** 隐藏，保持原样则保留。</small></section>
 <div class="actions"><button type="submit">保存配置</button><button type="button" class="secondary" id="restart">重启服务</button><button type="button" class="secondary" id="logout">退出</button><span class="muted">保存成功后可安全关闭页面</span></div></form></main>
 <script>
 const $=id=>document.getElementById(id);let cred='',cfg;
-const fields={adminuser:['server','username'],adminpass:['server','password']};
+const fields={adminuser:['server','username'],adminpass:['server','password'],contextreport:['context','report_token'],contextread:['context','read_token']};
 async function api(path,method='GET',body){const r=await fetch(path,{method,headers:{Authorization:'Basic '+btoa(cred),'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});const j=await r.json();if(!r.ok)throw Error(j.message||'请求失败');return j}
 function notice(s){$('notice').textContent=s}
 $('connect').onclick=async()=>{cred=$('user').value+':'+$('pass').value;try{cfg=(await api('/api/settings')).data;for(const[id,path]of Object.entries(fields))$(id).value=path.reduce((v,k)=>v[k],cfg)??'';$('settings').hidden=false;$('login').hidden=true;$('pass').value='';notice('配置已读取。修改后保存即自动生效。')}catch(e){cred='';notice(e.message)}};

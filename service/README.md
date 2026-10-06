@@ -1,6 +1,6 @@
 # deskwong service
 
-提供工时 `/worktime/summary`、AI 用量 `/ai/usage` 和服务配置后台 `/admin`。
+提供工时 `/worktime/summary`、AI 用量 `/ai/usage`、小智上下文 `/voice/context` 和服务配置后台 `/admin`。
 RaceBox 由设备直接上传到 MQTT Broker；本服务不再订阅 RaceBox 或连接 PostgreSQL。
 
 ## 配置后台与持久化
@@ -42,6 +42,16 @@ Compose 使用命名卷 `deskwong-settings`，容器重建和断电重启后仍�
 接口结果缓存 60 秒。Docker 应只读挂载整个 `.codex` 目录，不能只挂载 `auth.json`：
 Codex 刷新登录时会原子替换文件，只挂载单文件会让容器继续读取旧 inode。
 
+## 小智上下文
+
+开发板使用与工时服务相同的根地址，把当前缓存摘要上报到
+`POST /voice/context/report`；服务按 `device-id` 只保存每台设备的最新快照。
+小智上下文源配置为 `GET https://服务域名/voice/context`，请求头增加
+`Authorization: Bearer <context.read_token>`；小智会自动补充 `device-id`。
+在智控台对应角色的提示词中保留 `{{ dynamic_context }}`。
+
+`context.report_token` 与 `context.read_token` 可在 YAML 或 `/admin` 配置；为空时为兼容旧配置临时回落到 `server.token`。生产环境应设置两个不同的随机 Token。接口不临时请求 PingCode、天气或数据库，因此唤醒时只读取 SQLite 快照。
+
 ## 运行
 
 ```sh
@@ -57,6 +67,8 @@ MQTT Broker、主题、用户名和密码在设备后台配置；与本服务 SQ
 | GET | /health | 无 |
 | GET | /worktime/summary | 服务 Token |
 | GET | /ai/usage | 服务 Token |
+| POST | /voice/context/report | 上报 Token + device-id |
+| GET | /voice/context | 上下文读取 Token + device-id |
 | GET | /admin | 页面入口；读取配置需管理账号密码 |
 | GET / PUT | /api/settings | 管理账号密码（HTTP Basic） |
 | POST | /api/restart | 管理账号密码（HTTP Basic） |

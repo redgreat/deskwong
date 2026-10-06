@@ -28,6 +28,9 @@ typedef struct {
     char almanac_api_url[CFG_URL_MAX];    // 黄历 API；GET date/location/key
     char almanac_key[CFG_STR_MAX];        // 黄历 API Key
     uint16_t weather_refresh_minutes;     // 天气刷新周期，分钟
+    /* 屏幕自动返回（超时未操作回到主屏） */
+    uint16_t almanac_return_seconds;      // 天气黄历弹窗自动回主屏，秒（默认 15）
+    uint16_t calendar_return_seconds;     // 日历翻页模式自动回主屏，秒（默认 15）
     /* 工时 */
     char worktime_api_base[CFG_URL_MAX];
     char worktime_token[CFG_STR_MAX];

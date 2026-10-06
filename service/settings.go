@@ -38,7 +38,7 @@ func openSettings(path string, seed Config) (*SettingsStore, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	for _, q := range []string{"PRAGMA journal_mode=WAL", "PRAGMA synchronous=FULL", "PRAGMA busy_timeout=5000", "CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK(id=1), body TEXT NOT NULL)"} {
+	for _, q := range []string{"PRAGMA journal_mode=WAL", "PRAGMA synchronous=FULL", "PRAGMA busy_timeout=5000", "CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK(id=1), body TEXT NOT NULL)", "CREATE TABLE IF NOT EXISTS voice_context_snapshots (device_id TEXT PRIMARY KEY, observed_at INTEGER NOT NULL, received_at INTEGER NOT NULL, body TEXT NOT NULL)"} {
 		if _, err = db.Exec(q); err != nil {
 			db.Close()
 			return nil, err
@@ -172,6 +172,12 @@ func (a *App) registerAdmin(mux *http.ServeMux) {
 		if cfg.Server.Password != "" {
 			cfg.Server.Password = "******"
 		}
+		if cfg.Context.ReportToken != "" {
+			cfg.Context.ReportToken = "******"
+		}
+		if cfg.Context.ReadToken != "" {
+			cfg.Context.ReadToken = "******"
+		}
 		if cfg.Worktime.PingCode.Password != "" {
 			cfg.Worktime.PingCode.Password = "******"
 		}
@@ -201,6 +207,12 @@ func (a *App) registerAdmin(mux *http.ServeMux) {
 		}
 		if cfg.Server.Password == "******" || cfg.Server.Password == "" {
 			cfg.Server.Password = old.Server.Password
+		}
+		if cfg.Context.ReportToken == "******" || cfg.Context.ReportToken == "" {
+			cfg.Context.ReportToken = old.Context.ReportToken
+		}
+		if cfg.Context.ReadToken == "******" || cfg.Context.ReadToken == "" {
+			cfg.Context.ReadToken = old.Context.ReadToken
 		}
 		if cfg.Worktime.PingCode.Password == "******" {
 			cfg.Worktime.PingCode.Password = old.Worktime.PingCode.Password

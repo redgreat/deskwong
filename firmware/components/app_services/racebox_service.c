@@ -67,6 +67,8 @@ static int s_session_count;
 static volatile bool s_download_done, s_worker_active, s_cancel_upload;
 static volatile bool s_erase_pending;
 static volatile bool s_erase_phase;
+static volatile bool s_erase_verify;    /* ACK 已到，正在用状态查询核实清理结果 */
+static uint8_t s_erase_attempts;        /* 已发送 CMD_ERASE 的次数 */
 static volatile int s_erase_percent = -1;
 static int64_t s_erase_started_us;
 static bool s_bad_stream;
@@ -256,6 +258,9 @@ static bool record_has_fix(const uint8_t *raw) {
 /* UBX 风格命令（见 doc/SPECIFICATIONS.md §3，来自 racewong） */
 static const uint8_t CMD_DOWNLOAD[] = {0xB5, 0x62, 0xFF, 0x23, 0x00, 0x00, 0x22, 0x65};
 static const uint8_t CMD_ERASE[] = {0xB5, 0x62, 0xFF, 0x24, 0x00, 0x00, 0x23, 0x68};
+static const uint8_t CMD_STATUS[] = {0xB5, 0x62, 0xFF, 0x22, 0x00, 0x00, 0x21, 0x62};
+/* 擦除 ACK 后的核实重发上限 */
+#define RACEBOX_ERASE_MAX_ATTEMPTS 3
 
 static void set_message(const char *fmt, ...) {
     va_list ap;
@@ -300,6 +305,8 @@ static void on_ble_conn(bool connected) {
             s_last_activity_us = esp_timer_get_time();
             if (s_erase_pending) {
                 s_erase_phase = true;
+                s_erase_verify = false;
+                s_erase_attempts = 1;
                 s_erase_percent = 0;
                 s_erase_started_us = s_last_activity_us;
             }
@@ -331,6 +338,19 @@ static bool checksum_ok(const uint8_t *frame, size_t frame_len) {
     return a == frame[frame_len - 2] && b == frame[frame_len - 1];
 }
 
+/* 擦除收口：状态查询确认已清空（或不支持查询）时才算成功 */
+static void accept_erase_success(void) {
+    s_erase_pending = false;
+    s_erase_percent = 100;
+    finish_success();
+    s_state = RACEBOX_DONE;
+    set_message("上传完成，设备数据已清理");
+    cue(RB_SND_UPLOAD_DONE);    /* 上传完成（含设备清理） */
+    ESP_LOGI(TAG,"erase confirmed; daily points=%d internal_free=%u",
+             s_point_count,(unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
+    racebox_ble_stop();
+}
+
 static void handle_frame(const uint8_t *data, size_t len) {
     int plen = data[4] | (data[5] << 8);
     /* 不逐帧打印：RaceBox 下载时每秒会产生数百帧，在 NimBLE host
@@ -345,20 +365,48 @@ static void handle_frame(const uint8_t *data, size_t len) {
             set_message("正在清理设备内存 %d%%", progress);
             ESP_LOGI(TAG, "erase progress=%d%%", progress);
         } else if (data[3] == 0x02 && plen == 2 && data[6] == 0xFF && data[7] == 0x24) {
-            s_erase_pending = false;
-            s_erase_percent = 100;
-            finish_success();
-            s_state = RACEBOX_DONE;
-            set_message("上传完成，设备数据已清理");
-            cue(RB_SND_UPLOAD_DONE);    /* 上传完成（含设备清理） */
-            ESP_LOGI(TAG,"erase confirmed; daily points=%d internal_free=%u",
-                     s_point_count,(unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
-            racebox_ble_stop();
+            /* ACK 只代表设备接受了擦除命令。之前直接当成功收口，出现设备
+             * 回 ACK 但内存未清的情况只能靠用户复测发现；这里追加状态
+             * 查询（0x22）核实剩余记录数，没清干净就重发擦除。 */
+            s_last_activity_us = esp_timer_get_time();
+            if (racebox_ble_send(CMD_STATUS, sizeof(CMD_STATUS)) == 0) {
+                s_erase_verify = true;
+                set_message("正在确认清理结果");
+            } else {
+                accept_erase_success();   /* 查询发不出去时退回信任 ACK */
+            }
         } else if (data[3] == 0x03 && plen >= 2 && data[6] == 0xFF && data[7] == 0x24) {
             s_erase_pending = false;
             s_state = RACEBOX_FAILED;
             set_message("上传完成，但设备清理失败");
             racebox_ble_stop();
+        } else if (s_erase_verify && data[3] == 0x03 && plen >= 2 && data[6] == 0xFF && data[7] == 0x22) {
+            /* 状态查询被 NACK：设备不支持（非 S/Micro 机型），退回信任 ACK */
+            accept_erase_success();
+        } else if (s_erase_verify && data[3] == 0x22 && plen >= 12 && len >= 20) {
+            /* 状态帧：payload[4:8] 为设备内剩余记录数 */
+            int stored = (int)u32(data + 10);
+            s_last_activity_us = esp_timer_get_time();
+            ESP_LOGI(TAG, "erase verify: stored=%d attempts=%d", stored, (int)s_erase_attempts);
+            if (stored <= 0) {
+                accept_erase_success();
+            } else if (s_erase_attempts < RACEBOX_ERASE_MAX_ATTEMPTS) {
+                s_erase_attempts++;
+                s_erase_percent = -1;
+                set_message("设备仍有数据，正在重新清理");
+                ESP_LOGW(TAG, "device still has %d records, re-sending erase", stored);
+                if (racebox_ble_send(CMD_ERASE, sizeof(CMD_ERASE)) != 0) {
+                    s_erase_pending = false;
+                    s_state = RACEBOX_FAILED;
+                    set_message("上传完成，但清理命令发送失败");
+                    racebox_ble_stop();
+                }
+            } else {
+                s_erase_pending = false;
+                s_state = RACEBOX_FAILED;
+                set_message("上传完成，但设备清理未生效");
+                racebox_ble_stop();
+            }
         }
         return;
     }
@@ -568,6 +616,8 @@ static void upload_worker(void *arg) {
         if (start_erase) {
             s_erase_pending=true;
             s_erase_phase=true;
+            s_erase_verify=false;
+            s_erase_attempts=0;
             s_erase_percent=-1;
             s_erase_started_us=0;
             s_state=RACEBOX_SCANNING;
@@ -674,7 +724,7 @@ void racebox_service_trigger(void) {
     free_record_chunks();
     free_sessions();
     s_uploaded=0; s_download_done=false; s_cancel_upload=false; s_bad_stream=false; s_erase_pending=false;
-    s_erase_phase=false; s_erase_percent=-1; s_erase_started_us=0;
+    s_erase_phase=false; s_erase_verify=false; s_erase_attempts=0; s_erase_percent=-1; s_erase_started_us=0;
     s_total = 0;
     s_received = 0;
     s_rx_stream_len = 0;

@@ -2,6 +2,7 @@
 #include "main_screen.h"
 #include "sync_screen.h"
 #include "weather_almanac_screen.h"
+#include "voice_screen.h"
 #include "calendar_service.h"
 #include "holiday_service.h"
 #include "ui_fonts.h"
@@ -38,9 +39,15 @@ int main(int argc,char **argv) {
         assert(lv_font_get_glyph_dsc(&lv_font_zh_14, &glyph, ch, 0));
         assert(lv_font_get_glyph_bitmap(&lv_font_zh_14, ch));
     }
-    // ° (U+00B0) temperature mark used by the almanac weather cells.
+    // ℃ (U+2103) temperature mark used by the almanac weather cells.
     assert(lv_font_get_glyph_dsc(&lv_font_zh_10,&glyph,0x00b0,0));
     assert(lv_font_get_glyph_bitmap(&lv_font_zh_10,0x00b0));
+    assert(glyph.adv_w <= 5 * 16);  // LVGL stores 1/16px; degree must hug the following '/'
+    // 330px almanac body: fixed 14px font fits exactly 23, but not 24, full-width glyphs.
+    assert(lv_txt_get_width("祭祭祭祭祭祭祭祭祭祭祭祭祭祭祭祭祭祭祭祭祭祭祭",69,
+                            &lv_font_zh_14,0,LV_TEXT_FLAG_NONE) <= 330);
+    assert(lv_txt_get_width("祭祭祭祭祭祭祭祭祭祭祭祭祭祭祭祭祭祭祭祭祭祭祭祭",72,
+                            &lv_font_zh_14,0,LV_TEXT_FLAG_NONE) > 330);
     main_screen_init(400,300);
     int month=argc>2?atoi(argv[2]):9;
     bool empty=argc>3 && strcmp(argv[3], "empty") == 0;
@@ -72,6 +79,7 @@ int main(int argc,char **argv) {
     main_screen_update_summary(empty?0:64,expected,empty?NULL:"晴\n26C / 58%",empty?0:argc>4?atoi(argv[4]):100,lunar,empty?NULL:&five,empty?NULL:&weekly,!empty,empty?0:12800,empty?NAN:24.0f,empty?NAN:52.0f);
     sync_screen_init(400,300);
     weather_almanac_screen_init(400,300);
+    voice_screen_init(400,300);
     if (argc>3 && strcmp(argv[3],"sync")==0) {
         racebox_progress_t p={};p.state=RACEBOX_UPLOADING;p.received=750;p.total=753;p.uploaded=612;p.download_done=true;p.percent=81;p.elapsed_seconds=23;p.speed_kbps_x10=326;
         strcpy(p.device,"RaceBox Mini S 2254300997");strcpy(p.message,"正在上传到服务器");
@@ -85,9 +93,9 @@ int main(int argc,char **argv) {
             const int icons[]={100,101,104,305,100,101,300};
             for(int i=0;i<WEATHER_DETAIL_SLOTS;i++) { strcpy(d.daily[i].label,days[i]); strcpy(d.daily[i].condition,cond[i]); d.daily[i].icon=icons[i]; d.daily[i].temp_max=26-i%3; d.daily[i].temp_min=18-i%2; d.daily[i].valid=true;
                 snprintf(d.hourly[i].label,sizeof(d.hourly[i].label),"%02d时",9+i); strcpy(d.hourly[i].condition,cond[(i+1)%8]); d.hourly[i].icon=icons[(i+1)%WEATHER_DETAIL_SLOTS]; d.hourly[i].temp_min=22+i%4; d.hourly[i].valid=true; }
-            /* 宜恰好超过一行（两行平分布局），忌两行以内 */
-            strcpy(d.almanac_yi,"出行、会友、签约、学习、整理、沐浴、扫舍、动土、祈福、开市、纳采、嫁娶、安床、修造、入宅、交易、求医、栽种、破土、安葬、赴任");
-            strcpy(d.almanac_ji,"动土、搬家、远行、开仓、争执、出行、会友、签约、学习、整理、沐浴、扫舍");
+            /* 真实 lunar-go 宜忌词表样本（验证黄历字形全覆盖） */
+            strcpy(d.almanac_yi,"祭祀、沐浴、修饰垣墙、平治道涂、馀事勿取");
+            strcpy(d.almanac_ji,"斋醮、嫁娶、移徙、出行、上梁、入宅");
             strcpy(d.updated_at,"2026-10-03");
         }
         if(strcmp(argv[3],"weather-overflow")==0) {
@@ -105,6 +113,12 @@ int main(int argc,char **argv) {
         weather_almanac_screen_update(&d); weather_almanac_screen_show();
     }
     if (argc>3 && strcmp(argv[3],"cal")==0) main_screen_set_calendar_mode(true);
+    if (argc>3 && strcmp(argv[3],"voice")==0) {
+        voice_screen_set_status("播放中");
+        voice_screen_set_question("请问现在几点，今天需要记录多少工时？");
+        voice_screen_set_answer("现在是上午九点四十一分，今天应记录八小时工时。");
+        voice_screen_show();
+    }
     save(argc>1?argv[1]:"preview.pgm");
     lv_mem_monitor_t m; lv_mem_monitor(&m);
     printf("UI heap used: %u / %u bytes\n",(unsigned)(m.total_size-m.free_size),(unsigned)m.total_size);

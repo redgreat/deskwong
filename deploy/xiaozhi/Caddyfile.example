@@ -1,16 +1,21 @@
-voice.example.com {
+voice.wongcw.cn {
+    # 设备 WebSocket（xiaozhi-server）
     handle /xiaozhi/v1/* {
-        reverse_proxy 127.0.0.1:18031
+        reverse_proxy 127.0.0.1:18041
     }
+    # 设备 OTA 必须走智控台(manager-api)：设备注册、激活码绑定智能体、
+    # 下发 server.websocket 地址都在这里；Python 端 8003 的 OTA 只用于
+    # 无智控台的轻量部署，走它设备不会出现在智控台里。
     handle /xiaozhi/ota/* {
-        reverse_proxy 127.0.0.1:18033
+        reverse_proxy 127.0.0.1:18042
     }
+    # 视觉分析接口（xiaozhi-server）
     handle /mcp/* {
-        reverse_proxy 127.0.0.1:18033
+        reverse_proxy 127.0.0.1:18043
     }
     respond 404
 }
 
-xiaozhi-admin.example.com {
-    reverse_proxy 127.0.0.1:18032
+xz.wongcw.cn {
+    reverse_proxy 127.0.0.1:18042
 }

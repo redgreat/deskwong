@@ -13,7 +13,9 @@ static const char *TAG = "cfg";
 /* 一次性迁移：老设备 NVS 里已有空值会盖掉出厂默认值，这里把关键字段补回来 */
 static void migrate(app_config_t *cfg, uint8_t stored_ver) {
     if (stored_ver >= CFG_VERSION) return;
-    cfg->racebox_auto_erase = false;
+    /* 布尔开关一律不动：rb_erase 这类键老固件从未写过，缺失时
+     * app_config_defaults 已给出默认值；在这里强制清零会把用户
+     * 设置的"上传后清空内存"在每次固件升级时静默重置。 */
     if (cfg->weather_api_url[0] == 0)
         strcpy(cfg->weather_api_url, "https://nc2tujbtc3.re.qweatherapi.com/v7/weather/now");
     if (cfg->weather_key[0] == 0)
@@ -43,6 +45,8 @@ void app_config_defaults(app_config_t *cfg) {
     strcpy(cfg->almanac_api_url, "https://ai.wongcw.cn/almanac");   // 服务端内置黄历算法（lunar），无需注册
     strcpy(cfg->almanac_key, "");
     cfg->weather_refresh_minutes = 30;
+    cfg->almanac_return_seconds = 15;
+    cfg->calendar_return_seconds = 15;
     strcpy(cfg->worktime_api_base, "");
     strcpy(cfg->worktime_token, "");
     cfg->worktime_refresh_minutes = 30;
@@ -116,6 +120,10 @@ esp_err_t app_config_load(app_config_t *cfg) {
     get_str(h, "alm_key", cfg->almanac_key, sizeof(cfg->almanac_key));
     nvs_get_u16(h, "weather_freq", &cfg->weather_refresh_minutes);
     if (cfg->weather_refresh_minutes < 5) cfg->weather_refresh_minutes = 5;
+    nvs_get_u16(h, "alm_back", &cfg->almanac_return_seconds);
+    if (cfg->almanac_return_seconds < 3 || cfg->almanac_return_seconds > 600) cfg->almanac_return_seconds = 15;
+    nvs_get_u16(h, "cal_back", &cfg->calendar_return_seconds);
+    if (cfg->calendar_return_seconds < 3 || cfg->calendar_return_seconds > 600) cfg->calendar_return_seconds = 15;
     get_str(h, "wt_base", cfg->worktime_api_base, sizeof(cfg->worktime_api_base));
     get_str(h, "wt_token", cfg->worktime_token, sizeof(cfg->worktime_token));
     nvs_get_u16(h, "wt_freq", &cfg->worktime_refresh_minutes);
@@ -160,6 +168,10 @@ esp_err_t app_config_load(app_config_t *cfg) {
     uint8_t vm = cfg->voice_mcp_enabled ? 1 : 0;
     nvs_get_u8(h, "vo_mcp", &vm);
     cfg->voice_mcp_enabled = vm != 0;
+    /* 黄历默认走服务端内置算法：地址被清空时（旧迁移只落了版本号没落 alm_url、
+     * 或网页保存了空值）总是补回默认值，不做版本门槛 */
+    if (cfg->almanac_api_url[0] == 0)
+        strcpy(cfg->almanac_api_url, "https://ai.wongcw.cn/almanac");
     uint8_t ver = 0;
     nvs_get_u8(h, "cfg_ver", &ver);
     nvs_close(h);
@@ -170,7 +182,6 @@ esp_err_t app_config_load(app_config_t *cfg) {
         nvs_handle_t w;
         if (nvs_open(NVS_NS, NVS_READWRITE, &w) == ESP_OK) {
             nvs_set_u8(w, "cfg_ver", CFG_VERSION);
-            nvs_set_u8(w, "rb_erase", 0);
             nvs_set_str(w, "weather_loc", cfg->weather_location);
             nvs_set_str(w, "weather_url", cfg->weather_api_url);
             nvs_set_str(w, "weather_key", cfg->weather_key);
@@ -197,6 +208,8 @@ esp_err_t app_config_save(const app_config_t *cfg) {
     if ((err = nvs_set_str(h, "alm_url", cfg->almanac_api_url)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_str(h, "alm_key", cfg->almanac_key)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_u16(h, "weather_freq", cfg->weather_refresh_minutes)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_u16(h, "alm_back", cfg->almanac_return_seconds)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_u16(h, "cal_back", cfg->calendar_return_seconds)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_str(h, "wt_base", cfg->worktime_api_base)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_str(h, "wt_token", cfg->worktime_token)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_u16(h, "wt_freq", cfg->worktime_refresh_minutes)) != ESP_OK) { nvs_close(h); return err; }
