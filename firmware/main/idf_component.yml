@@ -7,3 +7,5 @@ dependencies:
   # 小智语音链路：WebSocket 客户端 + Opus 编解码
   espressif/esp_websocket_client: "^1.4.0"
   78/esp-opus: "^1.0.5"
+  # 唤醒词（WakeNet9 "你好小智"）；2.4.7 与小智官方固件同版本，支持 IDF>=5.0
+  espressif/esp-sr: "==2.4.7"

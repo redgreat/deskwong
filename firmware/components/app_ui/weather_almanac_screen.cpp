@@ -22,9 +22,8 @@ static const int CELL_W = (PANEL_W - 2 * CELL_MARGIN) / WEATHER_DETAIL_SLOTS; /*
 
 static lv_obj_t *s_panel, *s_back;
 static lv_obj_t *s_day_icon[WEATHER_DETAIL_SLOTS], *s_day_text[WEATHER_DETAIL_SLOTS];
-static lv_obj_t *s_day_info[WEATHER_DETAIL_SLOTS];   /* 双行 label：温度+日期 */
 static lv_obj_t *s_hour_icon[WEATHER_DETAIL_SLOTS], *s_hour_text[WEATHER_DETAIL_SLOTS];
-static lv_obj_t *s_hour_info[WEATHER_DETAIL_SLOTS];  /* 双行 label：温度+小时 */
+static lv_obj_t *s_day_temp_row, *s_day_label_row, *s_hour_temp_row, *s_hour_label_row;
 static lv_obj_t *s_yi_l1, *s_yi_l2, *s_ji_l1, *s_ji_l2;   /* 宜/忌正文，最多两行 */
 static lv_img_dsc_t s_day_img[WEATHER_DETAIL_SLOTS], s_hour_img[WEATHER_DETAIL_SLOTS];
 static lv_point_t s_rule_pts[2];
@@ -32,9 +31,11 @@ static bool s_visible;
 
 /* 单元格文本的静态缓冲（condition 最长 16B，来自 weather_service.h） */
 static char s_day_cond_b[WEATHER_DETAIL_SLOTS][16];
-static char s_day_info_b[WEATHER_DETAIL_SLOTS][24];
+static char s_day_temp_b[WEATHER_DETAIL_SLOTS][24];
+static char s_day_label_b[WEATHER_DETAIL_SLOTS][16];
 static char s_hour_cond_b[WEATHER_DETAIL_SLOTS][16];
-static char s_hour_info_b[WEATHER_DETAIL_SLOTS][24];
+static char s_hour_temp_b[WEATHER_DETAIL_SLOTS][16];
+static char s_hour_label_b[WEATHER_DETAIL_SLOTS][16];
 static char s_yi_b[sizeof(((weather_detail_t *)0)->almanac_yi)];
 static char s_ji_b[sizeof(((weather_detail_t *)0)->almanac_ji)];
 /* 宜/忌折行结果缓冲：一行最多是源文本的一个子串，加 "..." 的余量 */
@@ -46,13 +47,15 @@ static const int BADGE_YI_Y = 176, BADGE_JI_Y = 214;
 static const int BADGE_H = 28;
 /* 正文可用宽度：x=42 起，右侧留 8px */
 static const int CELL_TEXT_W = PANEL_W - 50;
-/* zh_10 行框 12px、基线 2px：CJK 字面从行顶起高 10px，居中按字面算 */
-static const int ZH10_INK_H = 10;
+/* 宜/忌正文用 zh_14：行框 15px、基线 2px，CJK 字面从行顶起高 13px，居中按字面算 */
+static const int YIJI_INK_H = 13;
+static const lv_font_t *const YIJI_FONT = &lv_font_zh_14;
 
 /* 共享样式 */
 static lv_style_t st_bg_black, st_bg_white;
 static lv_style_t st_zh10;        /* 单元格文本：zh_10 黑字居中 */
-static lv_style_t st_zh10_wrap;   /* 宜/忌正文：zh_10 黑字左对齐换行 */
+static lv_style_t st_zh10_wrap;   /* 备用：zh_10 黑字左对齐换行 */
+static lv_style_t st_zh14_wrap;   /* 宜/忌正文：zh_14 黑字左对齐换行 */
 static lv_style_t st_title;       /* 标题：zh_14 白字居中 */
 static lv_style_t st_badge_yi;    /* 宜：黑底白字圆角 */
 static lv_style_t st_badge_ji;    /* 忌：白底黑字描边圆角 */
@@ -71,11 +74,14 @@ static void init_styles(void) {
     lv_style_set_text_font(&st_zh10, &lv_font_zh_10);
     lv_style_set_text_color(&st_zh10, lv_color_black());
     lv_style_set_text_align(&st_zh10, LV_TEXT_ALIGN_CENTER);
-    lv_style_set_text_line_space(&st_zh10, 1);   /* 温度+日期两行之间留 1px */
     lv_style_init(&st_zh10_wrap);
     lv_style_set_text_font(&st_zh10_wrap, &lv_font_zh_10);
     lv_style_set_text_color(&st_zh10_wrap, lv_color_black());
     lv_style_set_text_align(&st_zh10_wrap, LV_TEXT_ALIGN_LEFT);
+    lv_style_init(&st_zh14_wrap);
+    lv_style_set_text_font(&st_zh14_wrap, &lv_font_zh_14);
+    lv_style_set_text_color(&st_zh14_wrap, lv_color_black());
+    lv_style_set_text_align(&st_zh14_wrap, LV_TEXT_ALIGN_LEFT);
     lv_style_init(&st_title);
     lv_style_set_text_font(&st_title, &lv_font_zh_14);
     lv_style_set_text_color(&st_title, lv_color_white());
@@ -165,21 +171,51 @@ static void set_icon(lv_obj_t *obj, lv_img_dsc_t *dsc, int code) {
     lv_obj_clear_flag(obj, LV_OBJ_FLAG_HIDDEN);
 }
 
-/* top 为列顶；三小行整体高约 56，与 52 宽构成隐形正方形。
- * 温度与日期/小时是同款样式且都居中，合成一个双行 label 省一半对象。 */
-static lv_obj_t *two_line_label(lv_obj_t *parent, int x, int y) {
-    lv_obj_t *o = lv_label_create(parent);
+typedef struct {
+    const char *items[WEATHER_DETAIL_SLOTS];
+} weather_text_row_t;
+
+static weather_text_row_t s_day_temp_draw, s_day_label_draw, s_hour_temp_draw, s_hour_label_draw;
+
+/* 一整行只占一个轻量绘制对象，但每列文字仍独立测宽和定位。这样既不会依赖
+ * 多行 label 的 CENTER 行为，也不会为了 28 段短文本耗尽 128KB LVGL 对象池。 */
+static void draw_weather_text_row(lv_event_t *e) {
+    lv_obj_t *obj = lv_event_get_target(e);
+    lv_draw_ctx_t *draw_ctx = lv_event_get_draw_ctx(e);
+    weather_text_row_t *row = (weather_text_row_t *)lv_event_get_user_data(e);
+    lv_area_t obj_area;
+    lv_obj_get_coords(obj, &obj_area);
+    lv_draw_label_dsc_t dsc;
+    lv_draw_label_dsc_init(&dsc);
+    dsc.font = &lv_font_zh_10;
+    dsc.color = lv_color_black();
+    for (int i = 0; i < WEATHER_DETAIL_SLOTS; ++i) {
+        const char *text = row->items[i] ? row->items[i] : "--";
+        int text_w = (int)lv_txt_get_width(text, (uint32_t)strlen(text), dsc.font,
+                                           0, LV_TEXT_FLAG_NONE);
+        if (text_w < 1) text_w = 1;
+        if (text_w > CELL_W) text_w = CELL_W;
+        lv_area_t text_area = {
+            .x1 = (lv_coord_t)(obj_area.x1 + CELL_MARGIN + i * CELL_W + (CELL_W - text_w) / 2),
+            .y1 = obj_area.y1,
+            .x2 = (lv_coord_t)(obj_area.x1 + CELL_MARGIN + i * CELL_W + (CELL_W - text_w) / 2 + text_w - 1),
+            .y2 = (lv_coord_t)(obj_area.y1 + dsc.font->line_height - 1),
+        };
+        lv_draw_label(draw_ctx, &dsc, &text_area, text, NULL);
+    }
+}
+
+static lv_obj_t *weather_text_row(lv_obj_t *parent, int y, weather_text_row_t *row) {
+    lv_obj_t *o = lv_obj_create(parent);
     lv_obj_remove_style_all(o);
-    lv_obj_add_style(o, &st_zh10, 0);
-    lv_obj_set_pos(o, x, y);
-    lv_obj_set_width(o, CELL_W);
-    lv_label_set_long_mode(o, LV_LABEL_LONG_CLIP);
-    lv_label_set_text_static(o, "--\n--");
+    lv_obj_set_pos(o, 0, y);
+    lv_obj_set_size(o, PANEL_W, lv_font_zh_10.line_height);
+    lv_obj_clear_flag(o, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(o, draw_weather_text_row, LV_EVENT_DRAW_MAIN, row);
     return o;
 }
 
-static void make_weather_row(lv_obj_t *parent, int top, lv_obj_t **icons, lv_obj_t **texts,
-                             lv_obj_t **infos) {
+static void make_weather_row(lv_obj_t *parent, int top, lv_obj_t **icons, lv_obj_t **texts) {
     for (int i = 0; i < WEATHER_DETAIL_SLOTS; ++i) {
         int x = CELL_MARGIN + i * CELL_W;
         icons[i] = lv_img_create(parent);
@@ -195,14 +231,13 @@ static void make_weather_row(lv_obj_t *parent, int top, lv_obj_t **icons, lv_obj
         lv_obj_set_width(texts[i], CELL_W - 29);
         lv_label_set_long_mode(texts[i], LV_LABEL_LONG_CLIP);
         lv_label_set_text_static(texts[i], "--");
-        infos[i] = two_line_label(parent, x, top + 31);
     }
 }
 
-static lv_obj_t *cell_label(lv_obj_t *parent, int x, int y, int w) {
+static lv_obj_t *cell_label(lv_obj_t *parent, int x, int y, int w, lv_style_t *st) {
     lv_obj_t *o = lv_label_create(parent);
     lv_obj_remove_style_all(o);
-    lv_obj_add_style(o, &st_zh10_wrap, 0);
+    lv_obj_add_style(o, st, 0);
     lv_obj_set_pos(o, x, y);
     lv_obj_set_width(o, w);
     lv_label_set_long_mode(o, LV_LABEL_LONG_CLIP);
@@ -211,7 +246,7 @@ static lv_obj_t *cell_label(lv_obj_t *parent, int x, int y, int w) {
 
 /* ---- 宜/忌正文：手动折行 + 垂直居中 + 省略号 ----
  * lv_label 的 WRAP 模式既不能限制行数也不会加省略号，黄历文本
- * 按 zh_10 字宽手动折成最多两行；放不下的部分以 "..." 结尾。
+ * 按黄历字体字宽手动折成最多两行；放不下的部分以 "..." 结尾。
  * 一行在 28px 徽章带内按字面居中；两行时上下各占一半分别居中。 */
 
 static const char *utf8_next(const char *p) {
@@ -228,7 +263,7 @@ static const char *utf8_prev(const char *start, const char *p) {
 }
 
 static bool text_fits(const char *s, const char *e, int extra_px) {
-    return lv_txt_get_width(s, (uint32_t)(e - s), &lv_font_zh_10, 0, LV_TEXT_FLAG_NONE) + extra_px <= CELL_TEXT_W;
+    return lv_txt_get_width(s, (uint32_t)(e - s), YIJI_FONT, 0, LV_TEXT_FLAG_NONE) + extra_px <= CELL_TEXT_W;
 }
 
 /* 把 src 折成最多两行写入 l1/l2，返回行数。第二行放不下时从尾部
@@ -255,7 +290,7 @@ static int wrap_two_lines(const char *src, char *l1, size_t l1sz, char *l2, size
             break;
         }
     }
-    int ell_w = (int)lv_txt_get_width("...", 3, &lv_font_zh_10, 0, LV_TEXT_FLAG_NONE);
+    int ell_w = (int)lv_txt_get_width("...", 3, YIJI_FONT, 0, LV_TEXT_FLAG_NONE);
     const char *end = p + strlen(p);
     if (text_fits(p, end, 0)) {          /* 第二行原样放得下，不加省略号 */
         snprintf(l2, l2sz, "%s", p);
@@ -273,11 +308,11 @@ static void place_almanac_text(lv_obj_t *l1, lv_obj_t *l2, const char *src,
                                char *b1, size_t b1sz, char *b2, size_t b2sz, int badge_y) {
     int lines = wrap_two_lines(src, b1, b1sz, b2, b2sz);
     lv_label_set_text_static(l1, b1);
-    lv_obj_set_y(l1, badge_y + (lines == 2 ? (BADGE_H / 2 - ZH10_INK_H) / 2
-                                           : (BADGE_H - ZH10_INK_H) / 2));
+    lv_obj_set_y(l1, badge_y + (lines == 2 ? (BADGE_H / 2 - YIJI_INK_H) / 2
+                                           : (BADGE_H - YIJI_INK_H) / 2));
     if (lines == 2) {
         lv_label_set_text_static(l2, b2);
-        lv_obj_set_y(l2, badge_y + BADGE_H / 2 + (BADGE_H / 2 - ZH10_INK_H) / 2);
+        lv_obj_set_y(l2, badge_y + BADGE_H / 2 + (BADGE_H / 2 - YIJI_INK_H) / 2);
         lv_obj_clear_flag(l2, LV_OBJ_FLAG_HIDDEN);
     } else {
         lv_obj_add_flag(l2, LV_OBJ_FLAG_HIDDEN);
@@ -307,17 +342,31 @@ extern "C" void weather_almanac_screen_init(int width, int height) {
     s_rule_pts[0].x = 0; s_rule_pts[0].y = 0;
     s_rule_pts[1].x = PANEL_W - 2 * CELL_MARGIN; s_rule_pts[1].y = 0;
 
-    make_weather_row(s_panel, 31, s_day_icon, s_day_text, s_day_info);
+    for (int i = 0; i < WEATHER_DETAIL_SLOTS; ++i) {
+        snprintf(s_day_temp_b[i], sizeof(s_day_temp_b[i]), "--℃/--℃");
+        snprintf(s_day_label_b[i], sizeof(s_day_label_b[i]), "--");
+        snprintf(s_hour_temp_b[i], sizeof(s_hour_temp_b[i]), "--℃");
+        snprintf(s_hour_label_b[i], sizeof(s_hour_label_b[i]), "--");
+        s_day_temp_draw.items[i] = s_day_temp_b[i];
+        s_day_label_draw.items[i] = s_day_label_b[i];
+        s_hour_temp_draw.items[i] = s_hour_temp_b[i];
+        s_hour_label_draw.items[i] = s_hour_label_b[i];
+    }
+    make_weather_row(s_panel, 31, s_day_icon, s_day_text);
+    s_day_temp_row = weather_text_row(s_panel, 62, &s_day_temp_draw);
+    s_day_label_row = weather_text_row(s_panel, 74, &s_day_label_draw);
     dashed_rule(s_panel, 92);
-    make_weather_row(s_panel, 99, s_hour_icon, s_hour_text, s_hour_info);
+    make_weather_row(s_panel, 99, s_hour_icon, s_hour_text);
+    s_hour_temp_row = weather_text_row(s_panel, 130, &s_hour_temp_draw);
+    s_hour_label_row = weather_text_row(s_panel, 142, &s_hour_label_draw);
     dashed_rule(s_panel, 160);
 
     badge(s_panel, "宜", 8, BADGE_YI_Y, true);
     badge(s_panel, "忌", 8, BADGE_JI_Y, false);
-    s_yi_l1 = cell_label(s_panel, 42, BADGE_YI_Y, CELL_TEXT_W);
-    s_yi_l2 = cell_label(s_panel, 42, BADGE_YI_Y, CELL_TEXT_W);
-    s_ji_l1 = cell_label(s_panel, 42, BADGE_JI_Y, CELL_TEXT_W);
-    s_ji_l2 = cell_label(s_panel, 42, BADGE_JI_Y, CELL_TEXT_W);
+    s_yi_l1 = cell_label(s_panel, 42, BADGE_YI_Y, CELL_TEXT_W, &st_zh14_wrap);
+    s_yi_l2 = cell_label(s_panel, 42, BADGE_YI_Y, CELL_TEXT_W, &st_zh14_wrap);
+    s_ji_l1 = cell_label(s_panel, 42, BADGE_JI_Y, CELL_TEXT_W, &st_zh14_wrap);
+    s_ji_l2 = cell_label(s_panel, 42, BADGE_JI_Y, CELL_TEXT_W, &st_zh14_wrap);
     place_almanac_text(s_yi_l1, s_yi_l2, "请在后台配置黄历接口",
                        s_yi_l1_b, sizeof(s_yi_l1_b), s_yi_l2_b, sizeof(s_yi_l2_b), BADGE_YI_Y);
     place_almanac_text(s_ji_l1, s_ji_l2, "暂无数据",
@@ -331,22 +380,33 @@ extern "C" void weather_almanac_screen_update(const weather_detail_t *d) {
         set_icon(s_day_icon[i], &s_day_img[i], day->valid ? day->icon : 0);
         snprintf(s_day_cond_b[i], sizeof(s_day_cond_b[i]), "%s",
                  day->valid && day->condition[0] ? day->condition : "--");
-        if (day->valid) snprintf(s_day_info_b[i], sizeof(s_day_info_b[i]), "%d°/%d°\n%s",
-                                 day->temp_max, day->temp_min, day->label);
-        else snprintf(s_day_info_b[i], sizeof(s_day_info_b[i]), "--/--°\n--");
+        if (day->valid) {
+            snprintf(s_day_temp_b[i], sizeof(s_day_temp_b[i]), "%d℃/%d℃",
+                     day->temp_max, day->temp_min);
+            snprintf(s_day_label_b[i], sizeof(s_day_label_b[i]), "%s", day->label);
+        } else {
+            snprintf(s_day_temp_b[i], sizeof(s_day_temp_b[i]), "--℃/--℃");
+            snprintf(s_day_label_b[i], sizeof(s_day_label_b[i]), "--");
+        }
         lv_label_set_text_static(s_day_text[i], s_day_cond_b[i]);
-        lv_label_set_text_static(s_day_info[i], s_day_info_b[i]);
 
         const weather_forecast_item_t *hour = &d->hourly[i];
         set_icon(s_hour_icon[i], &s_hour_img[i], hour->valid ? hour->icon : 0);
         snprintf(s_hour_cond_b[i], sizeof(s_hour_cond_b[i]), "%s",
                  hour->valid && hour->condition[0] ? hour->condition : "--");
-        if (hour->valid) snprintf(s_hour_info_b[i], sizeof(s_hour_info_b[i]), "%d°\n%s",
-                                  hour->temp_min, hour->label);
-        else snprintf(s_hour_info_b[i], sizeof(s_hour_info_b[i]), "--°\n--");
+        if (hour->valid) {
+            snprintf(s_hour_temp_b[i], sizeof(s_hour_temp_b[i]), "%d℃", hour->temp_min);
+            snprintf(s_hour_label_b[i], sizeof(s_hour_label_b[i]), "%s", hour->label);
+        } else {
+            snprintf(s_hour_temp_b[i], sizeof(s_hour_temp_b[i]), "--℃");
+            snprintf(s_hour_label_b[i], sizeof(s_hour_label_b[i]), "--");
+        }
         lv_label_set_text_static(s_hour_text[i], s_hour_cond_b[i]);
-        lv_label_set_text_static(s_hour_info[i], s_hour_info_b[i]);
     }
+    lv_obj_invalidate(s_day_temp_row);
+    lv_obj_invalidate(s_day_label_row);
+    lv_obj_invalidate(s_hour_temp_row);
+    lv_obj_invalidate(s_hour_label_row);
     snprintf(s_yi_b, sizeof(s_yi_b), "%s", d->almanac_yi[0] ? d->almanac_yi : "请在后台配置黄历接口");
     snprintf(s_ji_b, sizeof(s_ji_b), "%s", d->almanac_ji[0] ? d->almanac_ji : "暂无数据");
     place_almanac_text(s_yi_l1, s_yi_l2, s_yi_b,

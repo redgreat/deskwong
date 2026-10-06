@@ -137,6 +137,8 @@ jobs:
 
       - name: Build firmware (ESP-IDF)
         uses: espressif/esp-idf-ci-action@v1
+        env:
+          DESKWONG_VERSION: ${{ github.ref_name }}
         with:
           esp_idf_version: v5.5.1
           target: esp32s3
@@ -154,21 +156,29 @@ jobs:
       - name: Merge flash image
         run: |
           python3 -m pip install --quiet esptool
-          python3 -m esptool --chip esp32s3 merge_bin -o "deskwong-merged-${GITHUB_REF_NAME}.bin" \
+          python3 -m esptool --chip esp32s3 merge_bin -o "deskwong-factory-${GITHUB_REF_NAME}.bin" \
             0x0 firmware/build/bootloader/bootloader.bin \
             0x8000 firmware/build/partition_table/partition-table.bin \
             0xf000 firmware/build/ota_data_initial.bin \
             0x20000 firmware/build/deskwong.bin \
             0x820000 spiffs.bin
-          cp firmware/build/deskwong.bin "deskwong-app-${GITHUB_REF_NAME}.bin"
-          ls -l deskwong-*.bin spiffs.bin
+          cp firmware/build/deskwong.bin "deskwong-ota-${GITHUB_REF_NAME}.bin"
+          cat > manifest.json <<EOF
+          {
+            "project": "deskwong",
+            "version": "${GITHUB_REF_NAME}",
+            "ota": {"file": "deskwong-ota-${GITHUB_REF_NAME}.bin", "usage": "Web OTA application image", "offset": "OTA partition"},
+            "factory": {"file": "deskwong-factory-${GITHUB_REF_NAME}.bin", "usage": "USB full flash image", "offset": "0x0"}
+          }
+          EOF
+          sha256sum "deskwong-ota-${GITHUB_REF_NAME}.bin" "deskwong-factory-${GITHUB_REF_NAME}.bin" manifest.json > SHA256SUMS
+          ls -l deskwong-*.bin manifest.json SHA256SUMS
 
       - name: Attach firmware to Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            deskwong-merged-${{ github.ref_name }}.bin
-            deskwong-app-${{ github.ref_name }}.bin
-            firmware/build/bootloader/bootloader.bin
-            firmware/build/partition_table/partition-table.bin
-            spiffs.bin
+            deskwong-ota-${{ github.ref_name }}.bin
+            deskwong-factory-${{ github.ref_name }}.bin
+            manifest.json
+            SHA256SUMS

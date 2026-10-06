@@ -63,8 +63,15 @@ if (-not $AppOnly) {
     if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
     New-Item -ItemType Directory -Path "$stage\www" | Out-Null
     Copy-Item -Path "$root\web\dist\*" -Destination "$stage\www" -Recurse -Force
-    & $py "$idf\components\spiffs\spiffsgen.py" 0x7E0000 $stage $spiffsBin
+    & $py "$idf\components\spiffs\spiffsgen.py" 0x5E0000 $stage $spiffsBin
     if ($LASTEXITCODE -ne 0) { Pop-Location; throw "spiffsgen failed" }
+}
+
+# esp-sr 唤醒模型（partitions.csv 里的 model 分区）：idf.py flash 会按注册的
+# flash target 自动带上 srmodels.bin，这里只校验产物存在，缺失说明 esp-sr 没配好
+$smodels = "$root\firmware\build\srmodels\srmodels.bin"
+if (-not (Test-Path $smodels)) {
+    Write-Host "WARN: build/srmodels/srmodels.bin 不存在——唤醒模型不会被烧录，唤醒功能不可用" -ForegroundColor Yellow
 }
 
 Write-Host "==> Flashing firmware to $Port" -ForegroundColor Cyan
@@ -73,8 +80,9 @@ if ($LASTEXITCODE -ne 0) { Pop-Location; throw "firmware flash failed" }
 
 if (-not $AppOnly) {
     Write-Host "==> Flashing SPIFFS (web assets)" -ForegroundColor Cyan
+    # 偏移与 partitions.csv 的 spiffs 分区一致（model 分区占了 0x820000~0xA20000）
     & $py -m esptool --chip esp32s3 -p $Port -b 460800 --before default_reset --after hard_reset `
-        write_flash --flash_mode dio --flash_size 16MB --flash_freq 80m 0x820000 $spiffsBin
+        write_flash --flash_mode dio --flash_size 16MB --flash_freq 80m 0xa20000 $spiffsBin
     if ($LASTEXITCODE -ne 0) { Pop-Location; throw "spiffs flash failed" }
 }
 Pop-Location

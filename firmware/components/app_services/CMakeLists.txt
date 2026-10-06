@@ -1,11 +1,12 @@
 idf_component_register(
-    SRCS "time_service.cpp" "sensor_service.cpp" "http_util.c" "puff.c"
+    SRCS "time_service.cpp" "time_util.c" "sensor_service.cpp" "http_util.c" "puff.c"
          "weather_service.c" "worktime_service.c" "aiusage_service.c"
+         "voice_context_service.c"
          "net_scheduler.c"
          "calendar_service.c" "reminder_service.c" "holiday_service.c"
          "app_mqtt.c" "racebox_service.c" "racebox_ble.c" "audio_service.c"
-         "voice_service.c"
+         "voice_service.c" "voice_wake.c"
     INCLUDE_DIRS "."
     REQUIRES port_bsp codec_board esp_netif esp_timer esp_http_client mqtt bt json freertos log esp_rom nvs_flash mbedtls
-             app_config esp_websocket_client esp-opus efuse
+             app_config esp_websocket_client esp-opus efuse espressif__esp-sr
 )

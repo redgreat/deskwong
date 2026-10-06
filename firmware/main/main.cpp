@@ -31,17 +31,51 @@
 #include "net_scheduler.h"
 #include "audio_service.h"
 #include "voice_service.h"
+#include "voice_wake.h"
+#include "voice_context_service.h"
 #include "main_screen.h"
 #include "sync_screen.h"
 #include "weather_almanac_screen.h"
+#include "voice_screen.h"
 
 static const char *TAG = "main";
 
-/* 语音事件先打到日志，后续再接屏显/表情 */
+/* 语音事件只保存最新快照；UI 任务拿到 LVGL 锁后重放，避免一次锁失败就丢弹窗。 */
+static portMUX_TYPE g_voice_ui_mux = portMUX_INITIALIZER_UNLOCKED;
+static uint32_t g_voice_ui_seq = 0;
+static voice_state_t g_voice_ui_state = VOICE_IDLE;
+static char g_voice_ui_status[20] = "";
+static char g_voice_ui_question[160] = "...";
+static char g_voice_ui_answer[256] = "...";
+static TickType_t g_voice_ui_error_until = 0;
+
 static void on_voice_event(const voice_event_t *ev, void *ctx) {
     (void)ctx;
     ESP_LOGI(TAG, "voice: state=%d text=%s emotion=%s", (int)ev->state,
              ev->text ? ev->text : "-", ev->emotion ? ev->emotion : "-");
+    const char *vtag = ev->state == VOICE_CONNECTING ? "正在唤醒"
+                     : ev->state == VOICE_RECONNECTING ? "服务重连中"
+                     : ev->state == VOICE_LISTENING  ? "聆听中"
+                     : ev->state == VOICE_SPEAKING   ? "播放中"
+                                                     : NULL;
+    taskENTER_CRITICAL(&g_voice_ui_mux);
+    g_voice_ui_state = ev->state;
+    if (vtag) snprintf(g_voice_ui_status, sizeof(g_voice_ui_status), "%s", vtag);
+    if (ev->state == VOICE_LISTENING && ev->text)
+        snprintf(g_voice_ui_question, sizeof(g_voice_ui_question), "%s", ev->text);
+    if (ev->state == VOICE_SPEAKING && ev->text)
+        snprintf(g_voice_ui_answer, sizeof(g_voice_ui_answer), "%s", ev->text);
+    if (ev->state == VOICE_IDLE) {
+        const char *err = voice_service_last_error();
+        if (err && err[0]) {
+            snprintf(g_voice_ui_status, sizeof(g_voice_ui_status), "服务不可用");
+            g_voice_ui_error_until = xTaskGetTickCount() + pdMS_TO_TICKS(5000);
+        } else {
+            g_voice_ui_error_until = 0;
+        }
+    }
+    g_voice_ui_seq++;
+    taskEXIT_CRITICAL(&g_voice_ui_mux);
 }
 
 /* 原生横屏 400×300 单色反射屏 */
@@ -66,6 +100,8 @@ static volatile bool g_calendar_dirty = false;
 static volatile int g_calendar_year = 0, g_calendar_month = 0;
 static volatile TickType_t g_calendar_last_action = 0;
 static volatile int g_worktime_year = 0, g_worktime_month = 0;
+/* 天气黄历弹窗：按下刷新数据并重置计时，超时自动收起回主屏（秒数走配置） */
+static volatile TickType_t g_almanac_shown_tick = 0;
 
 static void Lvgl_FlushCallback(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_map) {
     static bool first_flush = true;
@@ -183,6 +219,7 @@ static void job_weather(void *ctx) {
         weather_almanac_screen_update(&g_weather_detail);
         Lvgl_unlock();
     }
+    net_scheduler_request(NET_JOB_VOICE_CONTEXT);
 }
 
 static void job_worktime(void *ctx) {
@@ -199,11 +236,31 @@ static void job_worktime(void *ctx) {
     }
     g_summary_dirty = true;
     g_calendar_dirty = true;
+    net_scheduler_request(NET_JOB_VOICE_CONTEXT);
 }
 
 static void job_aiusage(void *ctx) {
     aiusage_service_fetch(g_ai, AI_MAX_PROVIDERS, &g_ai_count);
     g_summary_dirty = true;
+    net_scheduler_request(NET_JOB_VOICE_CONTEXT);
+}
+
+static void job_voice_context(void *ctx) {
+    (void)ctx;
+    datetime_t now;
+    time_service_now(&now);
+    voice_context_snapshot_t snap = {};
+    snap.year = now.year;
+    snap.month = now.month;
+    snap.day = now.day;
+    snap.worktime = g_worktime;
+    snap.ai = g_ai;
+    snap.ai_count = g_ai_count;
+    snap.weather = g_weather;
+    snap.weather_detail = g_weather_detail;
+    snap.racebox_points = racebox_service_point_count();
+    snap.racebox_complete = racebox_service_synced_today();
+    voice_context_service_report(&snap);
 }
 
 /* 配置里的分钟数 → 秒周期，并做下限保护 */
@@ -242,11 +299,47 @@ static void ui_update_task(void *arg) {
     calendar_cell_t cells[42];
     uint32_t tick = 0;
     uint32_t terminal_tick = 0;
+    uint32_t voice_ui_applied_seq = UINT32_MAX;
     int last_day = -1;
     racebox_state_t last_sync_state = RACEBOX_IDLE;
     while (1) {
         datetime_t dt;
         time_service_now(&dt);
+
+        uint32_t voice_seq;
+        voice_state_t voice_state;
+        TickType_t voice_error_until;
+        char voice_status[20], voice_q[160], voice_a[256];
+        taskENTER_CRITICAL(&g_voice_ui_mux);
+        voice_seq = g_voice_ui_seq;
+        voice_state = g_voice_ui_state;
+        voice_error_until = g_voice_ui_error_until;
+        snprintf(voice_status, sizeof(voice_status), "%s", g_voice_ui_status);
+        snprintf(voice_q, sizeof(voice_q), "%s", g_voice_ui_question);
+        snprintf(voice_a, sizeof(voice_a), "%s", g_voice_ui_answer);
+        taskEXIT_CRITICAL(&g_voice_ui_mux);
+        bool error_hold = voice_state == VOICE_IDLE && voice_error_until != 0 &&
+                          xTaskGetTickCount() < voice_error_until;
+        bool error_expired = voice_state == VOICE_IDLE && voice_error_until != 0 && !error_hold;
+        if (voice_seq != voice_ui_applied_seq || error_expired) {
+            if (Lvgl_lock(50)) {
+                if (voice_state != VOICE_IDLE || error_hold) {
+                    if (!voice_screen_visible()) voice_screen_show();
+                    voice_screen_set_status(voice_status);
+                    voice_screen_set_question(voice_q);
+                    voice_screen_set_answer(voice_a);
+                } else {
+                    voice_screen_hide();
+                }
+                Lvgl_unlock();
+                voice_ui_applied_seq = voice_seq;
+                if (error_expired) {
+                    taskENTER_CRITICAL(&g_voice_ui_mux);
+                    if (g_voice_ui_error_until == voice_error_until) g_voice_ui_error_until = 0;
+                    taskEXIT_CRITICAL(&g_voice_ui_mux);
+                }
+            }
+        }
 
         /* RaceBox 同步弹窗：200ms 轮询，进度条才跟得上 */
         racebox_progress_t prog;
@@ -280,6 +373,7 @@ static void ui_update_task(void *arg) {
         } else if (sync_terminal) {
             if (prog.state != last_sync_state) {
                 g_summary_dirty = true;
+                net_scheduler_request(NET_JOB_VOICE_CONTEXT);
                 if (Lvgl_lock(100)) {
                     sync_screen_update(&prog);
                     /* 成功立即收起；失败/无数据要停留让人看清，超时后自动收起 */
@@ -300,12 +394,25 @@ static void ui_update_task(void *arg) {
         }
         last_sync_state = prog.state;
 
-        if (g_calendar_mode && xTaskGetTickCount() - g_calendar_last_action > pdMS_TO_TICKS(30000)) {
+        /* 天气黄历弹窗超时自动收起，回到主屏；提示音告知已返回 */
+        if (weather_almanac_screen_visible() &&
+            xTaskGetTickCount() - g_almanac_shown_tick >
+                pdMS_TO_TICKS((uint32_t)g_cfg.almanac_return_seconds * 1000U)) {
+            if (Lvgl_lock(100)) {
+                weather_almanac_screen_hide();
+                Lvgl_unlock();
+            }
+            audio_service_cue(AUDIO_CUE_CANCEL);
+        }
+
+        if (g_calendar_mode && xTaskGetTickCount() - g_calendar_last_action >
+                pdMS_TO_TICKS((uint32_t)g_cfg.calendar_return_seconds * 1000U)) {
             g_calendar_mode = false;
             g_worktime_year = dt.year; g_worktime_month = dt.month;
             worktime_service_load(dt.year, dt.month, &g_worktime);
             net_scheduler_request(NET_JOB_WORKTIME);
             g_calendar_dirty = true;
+            audio_service_cue(AUDIO_CUE_CANCEL);
             ESP_LOGI(TAG, "calendar browse timeout -> main month");
         }
 
@@ -340,9 +447,17 @@ static void ui_update_task(void *arg) {
             char ip[32] = {0};
             g_battery = sensor_battery_level();
             wifi_get_ip(ip, sizeof(ip));
-            /* WiFi=已联网；AP=配网热点开着；OFF=两者皆无（避免把"没连上"误读成配网模式） */
+            /* WiFi=已联网；AP=配网热点开着；OFF=两者皆无（避免把"没连上"误读成配网模式）。
+             * 语音会话进行中在状态栏追加状态词（轮询周期 1s，足够当作屏显反馈）。 */
             const char *net = wifi_is_connected() ? "WiFi" : (wifi_is_ap_mode() ? "AP" : "OFF");
-            snprintf(status, sizeof(status), "%s | %u%%", net, (unsigned)g_battery);
+            voice_state_t vs = voice_service_state();
+            const char *vtag = vs == VOICE_CONNECTING ? "正在唤醒"
+                             : vs == VOICE_RECONNECTING ? "服务重连中"
+                             : vs == VOICE_LISTENING  ? "聆听中"
+                             : vs == VOICE_SPEAKING   ? "播放中"
+                                                      : NULL;
+            if (vtag) snprintf(status, sizeof(status), "%s | %u%% | %s", net, (unsigned)g_battery, vtag);
+            else snprintf(status, sizeof(status), "%s | %u%%", net, (unsigned)g_battery);
 
             if (Lvgl_lock(100)) {
                 main_screen_update_time(NULL, time_str, NULL, NULL);
@@ -489,9 +604,10 @@ static void button_task(void *arg) {
             }
         }
 
-        /* BOOT（GPIO0）按住约 3 秒 → 不重启，直接叠加配网热点（APSTA 共存，
-         * STA 照常连接）。之前"写标志+重启"的方案会在松手前把芯片带进下载
-         * 模式（GPIO0 低电平复位），已废弃。 */
+        /* BOOT（GPIO0）：短按=天气黄历弹窗；按住 ≥3 秒=不重启，直接叠加配网
+         * 热点（APSTA 共存，STA 照常连接）。之前"写标志+重启"的方案会在松手前
+         * 把芯片带进下载模式（GPIO0 低电平复位），已废弃。
+         * 语音对话只由唤醒词（或网页/HTTP 调试端点）触发，不占用按键。 */
         EventBits_t boot_bits = xEventGroupWaitBits(BootButtonGroups, 0x07, pdTRUE, pdFALSE, 0);
         if (boot_bits & 0x04) {
             if (boot_still_held_ms(2000)) {
@@ -515,10 +631,15 @@ static void button_task(void *arg) {
                        racebox_service_state() != RACEBOX_FAILED) {
                 ESP_LOGI(TAG, "BOOT click ignored while RaceBox sync is active");
             } else if (Lvgl_lock(100)) {
-                if (weather_almanac_screen_visible()) weather_almanac_screen_hide();
-                else {
-                    sync_screen_hide(); weather_almanac_screen_update(&g_weather_detail); weather_almanac_screen_show();
+                /* 天气黄历弹窗：按一次显示/刷新（重置自动收起计时），再按一次隐藏 */
+                if (weather_almanac_screen_visible()) {
+                    weather_almanac_screen_hide();
+                } else {
+                    sync_screen_hide();
+                    weather_almanac_screen_update(&g_weather_detail);
+                    weather_almanac_screen_show();
                     net_scheduler_request(NET_JOB_WEATHER);
+                    g_almanac_shown_tick = xTaskGetTickCount();
                 }
                 Lvgl_unlock();
             }
@@ -564,9 +685,17 @@ extern "C" void app_main(void) {
                          g_cfg.racebox_device_name, g_cfg.racebox_device_lock);
     audio_service_init();
     /* 语音（小智）只初始化，不在这里联网：此时 WiFi 还没起来。
-     * 需要对话时用 POST /api/voice/start 触发。 */
+     * 对话由唤醒词、BOOT 短按或 POST /api/voice/start 触发。 */
     voice_service_init(&g_cfg);
     voice_service_set_event_cb(on_voice_event, NULL);
+    const char *context_base = g_cfg.worktime_api_base[0] ? g_cfg.worktime_api_base
+                                                          : g_cfg.aiusage_api_base;
+    const char *context_token = g_cfg.worktime_token[0] ? g_cfg.worktime_token
+                                                        : g_cfg.aiusage_token;
+    voice_context_service_init(context_base, context_token, voice_service_device_id());
+    /* 唤醒监听：任务常驻，门控（voice_enabled/listen_mode/WiFi/会话态）
+     * 未满足时自动停驻，WiFi 连上且开启语音后即进入实时监听。 */
+    voice_wake_init(&g_cfg);
 
     RlcdPort.RLCD_Init();
     /* Push a known frame immediately so panel init is visible even before LVGL runs. */
@@ -576,6 +705,7 @@ extern "C" void app_main(void) {
         main_screen_init(LCD_WIDTH, LCD_HEIGHT);
         sync_screen_init(LCD_WIDTH, LCD_HEIGHT);
         weather_almanac_screen_init(LCD_WIDTH, LCD_HEIGHT);
+        voice_screen_init(LCD_WIDTH, LCD_HEIGHT);
         Lvgl_unlock();
     }
 
@@ -587,6 +717,7 @@ extern "C" void app_main(void) {
                            refresh_period(g_cfg.worktime_refresh_minutes, 300));
     net_scheduler_register(NET_JOB_AIUSAGE, job_aiusage, NULL,
                            refresh_period(g_cfg.aiusage_refresh_minutes, 60));
+    net_scheduler_register(NET_JOB_VOICE_CONTEXT, job_voice_context, NULL, 300);
 
     /* 开机只起 STA（无凭证时自动进纯 AP 配网）；热点由长按 BOOT 运行中开启 */
     wifi_init_ex(g_cfg.wifi_ssid, g_cfg.wifi_pass, false);

@@ -31,7 +31,8 @@ void racebox_ble_set_rx_cb(racebox_ble_rx_cb_t cb){}
 void racebox_ble_set_disc_cb(racebox_ble_disc_cb_t cb){}
 void racebox_ble_set_scan_done_cb(racebox_ble_scan_done_cb_t cb){}
 void racebox_ble_set_filter(const char *p,const char *l){}
-int racebox_ble_send(const uint8_t *p,int n){return 0;}
+static uint8_t last_cmd[16];static int last_cmd_len;
+int racebox_ble_send(const uint8_t *p,int n){memcpy(last_cmd,p,n);last_cmd_len=n;return 0;}
 static void frame(uint8_t id,const uint8_t *body,int n) {
  uint8_t raw[100]={0xb5,0x62,0xff,id,n,0};memcpy(raw+6,body,n);
  uint8_t a=0,b=0;for(int i=2;i<6+n;i++){a+=raw[i];b+=a;}raw[6+n]=a;raw[7+n]=b;
@@ -67,6 +68,7 @@ int main(void){
  assert(s_uploaded==65 && s_state==RACEBOX_DONE && publish_calls==2);
  assert(s_cached_offset==64 && s_chunk_count==1 && s_point_count==65);
  // With erase enabled, only the erase ACK finalizes success and daily points accumulate.
+ // ACK now triggers a status query to verify the memory is really empty.
  racebox_service_trigger();s_auto_erase=true;publish_calls=0;fail_on_call=0;
  max[0]=5;s_state=RACEBOX_DOWNLOADING;frame(0x23,max,4);
  for(int i=0;i<5;i++) frame(0x21,record,80);
@@ -74,12 +76,30 @@ int main(void){
  assert(s_state==RACEBOX_SCANNING && s_point_count==65);
  on_ble_conn(true);assert(s_state==RACEBOX_ERASING);
  uint8_t erase_ack[2]={0xff,0x24};frame(0x02,erase_ack,2);
+ assert(s_state==RACEBOX_ERASING && last_cmd_len==(int)sizeof(CMD_STATUS) && memcmp(last_cmd,CMD_STATUS,sizeof(CMD_STATUS))==0);
+ // Device does not support the status query (NACK FF 22): fall back to trusting the ACK.
+ uint8_t status_nack[2]={0xff,0x22};frame(0x03,status_nack,2);
  assert(s_state==RACEBOX_DONE && s_point_count==5 && s_count_accum_mode);
  racebox_service_trigger();max[0]=7;s_state=RACEBOX_DOWNLOADING;frame(0x23,max,4);
  for(int i=0;i<7;i++) frame(0x21,record,80);
  frame(0x02,ack,2);upload_worker(NULL);
  on_ble_conn(true);frame(0x02,erase_ack,2);
+ // Status reports the memory is really empty -> done.
+ uint8_t status_empty[12]={1,0,0,0,0,0,0,0,0xe1,0x11,0,0};frame(0x22,status_empty,12);
  assert(s_state==RACEBOX_DONE && s_point_count==12);
+ // Status still reports records: erase is re-sent, verified again, then honestly failed.
+ racebox_service_trigger();s_state=RACEBOX_DOWNLOADING;publish_calls=0;fail_on_call=0;
+ max[0]=3;frame(0x23,max,4);
+ for(int i=0;i<3;i++) frame(0x21,record,80);
+ frame(0x02,ack,2);upload_worker(NULL);
+ on_ble_conn(true);frame(0x02,erase_ack,2);
+ uint8_t status_stored[12]={1,0,0,0,100,0,0,0,0xe1,0x11,0,0};
+ frame(0x22,status_stored,12);
+ assert(s_state==RACEBOX_ERASING && last_cmd[3]==0x24);   // erase re-sent
+ frame(0x02,erase_ack,2);frame(0x22,status_stored,12);
+ assert(s_state==RACEBOX_ERASING && last_cmd[3]==0x24);   // second retry
+ frame(0x02,erase_ack,2);frame(0x22,status_stored,12);
+ assert(s_state==RACEBOX_FAILED && !strcmp(s_message,"上传完成，但设备清理未生效"));
  s_auto_erase=false;s_received=9;finish_success();assert(s_point_count==9 && !s_count_accum_mode);
  // 0x26 closes an exact session: two device sessions become two independent RBX2 messages.
  racebox_service_trigger();publish_calls=0;fail_on_call=0;connected=true;

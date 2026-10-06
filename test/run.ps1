@@ -43,6 +43,16 @@ try {
 } finally {
     if (Test-Path -LiteralPath $holidayExe) { Remove-Item -LiteralPath $holidayExe -Force }
 }
+$timeUtil = Join-Path $PSScriptRoot "firmware/time"
+$timeExe = Join-Path ([IO.Path]::GetTempPath()) ("deskwong-time-util-test-" + [guid]::NewGuid().ToString("N") + ".exe")
+try {
+    & gcc -std=c11 -O0 -g -I $services (Join-Path $timeUtil "time_test.c") (Join-Path $services "time_util.c") -o $timeExe
+    if ($LASTEXITCODE) { throw "Time util host test compilation failed" }
+    & $timeExe
+    if ($LASTEXITCODE) { throw "Time util host test failed" }
+} finally {
+    if (Test-Path -LiteralPath $timeExe) { Remove-Item -LiteralPath $timeExe -Force }
+}
 $weatherHour = Join-Path $PSScriptRoot "firmware/weather_hour"
 $weatherHourExe = Join-Path ([IO.Path]::GetTempPath()) ("deskwong-weather-hour-test-" + [guid]::NewGuid().ToString("N") + ".exe")
 try {
@@ -77,6 +87,23 @@ $fontAudit = Join-Path $repo "tools/audit_ui_fonts.py"
 & python $fontAudit
 if ($LASTEXITCODE) { throw "UI font audit failed" }
 
+$voiceSource = Get-Content -Raw -LiteralPath (Join-Path $services "voice_service.c")
+$autoListenCount = ([regex]::Matches($voiceSource, 'send_listen\("start",\s*"auto"\)')).Count
+if ($autoListenCount -ne 2 -or $voiceSource -match 'send_listen\("start",\s*"manual"\)') {
+    throw "Voice listen sequence must use auto mode for initial and TTS follow-up listening"
+}
+Write-Host "Voice auto-listen protocol inspection passed"
+if ($voiceSource -notmatch 'listening idle for 30s' -or
+    $voiceSource -notmatch 'retry_seconds\[\].*10, 30, 60, 300') {
+    throw "Voice lifecycle timeout/backoff inspection failed"
+}
+Write-Host "Voice lifecycle timeout/backoff inspection passed"
+
+& node (Join-Path $PSScriptRoot "web/ota_test.mjs")
+if ($LASTEXITCODE) { throw "Web OTA image inspection failed" }
+& node (Join-Path $PSScriptRoot "web/login_test.mjs")
+if ($LASTEXITCODE) { throw "Web login defaults inspection failed" }
+
 $uiSource = Join-Path $PSScriptRoot "ui_preview"
 $uiBuild = Join-Path $repo "build/ui_preview"
 & cmake -S $uiSource -B $uiBuild
@@ -95,6 +122,7 @@ New-Item -ItemType Directory -Force -Path $uiOut | Out-Null
 & $uiExe (Join-Path $uiOut "weather-empty.pgm") 10 weather-empty
 & $uiExe (Join-Path $uiOut "weather-overflow.pgm") 10 weather-overflow
 & $uiExe (Join-Path $uiOut "cal.pgm") 9 cal
+& $uiExe (Join-Path $uiOut "voice.pgm") 9 voice
 if ($LASTEXITCODE) { throw "UI preview rendering failed" }
 $forbidden = @(
     Get-ChildItem -LiteralPath (Join-Path $repo "service") -Filter "*_test.go" -File -ErrorAction SilentlyContinue

@@ -7,6 +7,7 @@
 #include "esp_random.h"
 #include "esp_system.h"
 #include "esp_ota_ops.h"
+#include "esp_app_format.h"
 #include "esp_app_desc.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -35,6 +36,13 @@ static void gen_token(void) {
 /* ---------- 工具 ---------- */
 static esp_err_t send_json(httpd_req_t *req, int code, cJSON *obj) {
     char *body = cJSON_PrintUnformatted(obj);
+    /* 业务码映射成真实 HTTP 状态码：网页层靠 HTTP 401 触发“清 token 回登录页”，
+     * 之前状态恒为 200，错误码只在 body 里，前端永远走不到 401 分支 */
+    if (code == 401) httpd_resp_set_status(req, "401 Unauthorized");
+    else if (code == 400) httpd_resp_set_status(req, "400 Bad Request");
+    else if (code == 404) httpd_resp_set_status(req, "404 Not Found");
+    else if (code == 500) httpd_resp_set_status(req, "500 Internal Server Error");
+    else if (code == 503) httpd_resp_set_status(req, "503 Service Unavailable");
     httpd_resp_set_type(req, "application/json");
     esp_err_t err = httpd_resp_sendstr(req, body ? body : "{}");
     if (body) free(body);
@@ -135,6 +143,8 @@ static esp_err_t config_get_handler(httpd_req_t *req) {
     cJSON_AddStringToObject(d, "almanac_api_url", stored.almanac_api_url);
     cJSON_AddStringToObject(d, "almanac_key", stored.almanac_key[0] ? "******" : "");
     cJSON_AddNumberToObject(d, "weather_refresh_minutes", stored.weather_refresh_minutes);
+    cJSON_AddNumberToObject(d, "almanac_return_seconds", stored.almanac_return_seconds);
+    cJSON_AddNumberToObject(d, "calendar_return_seconds", stored.calendar_return_seconds);
     cJSON_AddStringToObject(d, "worktime_api_base", stored.worktime_api_base);
     cJSON_AddStringToObject(d, "worktime_token", stored.worktime_token[0] ? "******" : "");
     cJSON_AddNumberToObject(d, "worktime_refresh_minutes", stored.worktime_refresh_minutes);
@@ -236,6 +246,20 @@ static esp_err_t config_put_handler(httpd_req_t *req) {
         if (minutes > 1440) minutes = 1440;
         pending.weather_refresh_minutes = (uint16_t)minutes;
     }
+    it = cJSON_GetObjectItem(j, "almanac_return_seconds");
+    if (it && cJSON_IsNumber(it)) {
+        int sec = it->valueint;
+        if (sec < 3) sec = 3;
+        if (sec > 600) sec = 600;
+        pending.almanac_return_seconds = (uint16_t)sec;
+    }
+    it = cJSON_GetObjectItem(j, "calendar_return_seconds");
+    if (it && cJSON_IsNumber(it)) {
+        int sec = it->valueint;
+        if (sec < 3) sec = 3;
+        if (sec > 600) sec = 600;
+        pending.calendar_return_seconds = (uint16_t)sec;
+    }
     set_str_field(j, "worktime_api_base", pending.worktime_api_base, sizeof(pending.worktime_api_base));
     it = cJSON_GetObjectItem(j, "worktime_token");
     if (it && cJSON_IsString(it) && it->valuestring[0] && strcmp(it->valuestring, "******") != 0) {
@@ -331,6 +355,9 @@ static esp_err_t config_put_handler(httpd_req_t *req) {
     }
     cJSON_Delete(j);
     if (app_config_save(&pending) != ESP_OK) return send_err(req, 500, "配置保存失败");
+    /* 同步回运行时配置：自动返回秒数、提醒时间等在界面循环里直接读 g_cfg，
+     * 不回写的话要等重启才生效 */
+    *s_cfg = pending;
     /* RaceBox 的上传主题 / 自动清理 / 设备过滤立即热生效，不用等重启；
      * 否则"上传后清除内存"开关打开后要等到下次重启才起作用，同步后不会清理。 */
     racebox_service_reconfigure(pending.racebox_upload_topic, pending.racebox_auto_erase,
@@ -345,15 +372,15 @@ static esp_err_t config_put_handler(httpd_req_t *req) {
     return send_err(req, 0, "MQTT 已关闭，配置已保存，RaceBox 设置立即生效");
 }
 
-/* 语音调试端点：不接硬件也能验证小智链路。
- * 注意 start 会同步等待服务端 hello（最多 10 秒），期间 httpd 线程被占用。 */
+/* 语音调试端点：异步请求启动（会话建立含 OTA TLS 握手，固定跑在专用大栈任务上，
+ * 不再占用 httpd 线程等待 hello）。 */
 static esp_err_t voice_start_handler(httpd_req_t *req) {
     if (!authed(req)) return send_err(req, 401, "unauthorized");
-    bool ok = voice_service_start();
-    const char *err = voice_service_last_error();
+    bool ok = voice_service_request_start(false);
     cJSON *o = cJSON_CreateObject();
     cJSON_AddNumberToObject(o, "code", ok ? 0 : 1);
-    cJSON_AddStringToObject(o, "message", ok ? "语音会话已开始" : (err ? err : "启动失败"));
+    cJSON_AddStringToObject(o, "message", ok ? "语音会话启动请求已受理"
+                                             : "已有启动请求在跑或任务创建失败");
     esp_err_t e = send_json(req, 0, o);
     cJSON_Delete(o);
     return e;
@@ -407,7 +434,7 @@ static esp_err_t logs_handler(httpd_req_t *req) {
     cJSON *d = cJSON_CreateObject();
     cJSON_AddStringToObject(d, "ip", ip);
     cJSON_AddBoolToObject(d, "wifi_connected", wifi_is_connected());
-    cJSON_AddStringToObject(d, "firmware", "deskwong-0.1.0");
+    cJSON_AddStringToObject(d, "firmware", esp_app_get_description()->version);
     cJSON_AddItemToObject(o, "data", d);
     esp_err_t err = send_json(req, 0, o);
     cJSON_Delete(o);
@@ -423,17 +450,43 @@ static esp_err_t ota_handler(httpd_req_t *req) {
     }
     const esp_partition_t *update = esp_ota_get_next_update_partition(NULL);
     if (!update) return send_err(req, 500, "no ota partition");
+    const size_t app_desc_offset = sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t);
+    if (total <= (int)(app_desc_offset + sizeof(esp_app_desc_t)) || total > (int)update->size)
+        return send_err(req, 400, "invalid OTA image size");
+
+    char *buf = (char *)malloc(1024);
+    if (!buf) return send_err(req, 500, "out of memory");
+    const int header_need = (int)(app_desc_offset + sizeof(esp_app_desc_t));
+    int first = 0;
+    while (first < header_need) {
+        int r = httpd_req_recv(req, buf + first, 1024 - first);
+        if (r <= 0) {
+            free(buf);
+            return send_err(req, 400, "incomplete OTA image header");
+        }
+        first += r;
+    }
+    esp_image_header_t image_header;
+    esp_app_desc_t incoming;
+    memcpy(&image_header, buf, sizeof(image_header));
+    memcpy(&incoming, buf + app_desc_offset, sizeof(incoming));
+    if (image_header.magic != ESP_IMAGE_HEADER_MAGIC ||
+        incoming.magic_word != ESP_APP_DESC_MAGIC_WORD ||
+        strncmp(incoming.project_name, "deskwong", sizeof(incoming.project_name)) != 0 ||
+        incoming.version[0] == '\0') {
+        free(buf);
+        return send_err(req, 400, "not a deskwong OTA application image");
+    }
 
     esp_ota_handle_t handle;
     esp_err_t err = esp_ota_begin(update, total > 0 ? total : OTA_WITH_SEQUENTIAL_WRITES, &handle);
-    if (err != ESP_OK) return send_err(req, 500, "ota begin failed");
-
-    char *buf = (char *)malloc(1024);
-    if (!buf) {
+    if (err != ESP_OK) { free(buf); return send_err(req, 500, "ota begin failed"); }
+    if (esp_ota_write(handle, buf, first) != ESP_OK) {
+        free(buf);
         esp_ota_abort(handle);
-        return send_err(req, 500, "out of memory");
+        return send_err(req, 500, "ota write failed");
     }
-    int received = 0;
+    int received = first;
     while (1) {
         int r = httpd_req_recv(req, buf, 1024);
         if (r <= 0) break;
@@ -445,12 +498,16 @@ static esp_err_t ota_handler(httpd_req_t *req) {
         received += r;
     }
     free(buf);
+    if (received != total) {
+        esp_ota_abort(handle);
+        return send_err(req, 400, "incomplete OTA image body");
+    }
     err = esp_ota_end(handle);
     if (err != ESP_OK) return send_err(req, 500, "ota end failed");
     err = esp_ota_set_boot_partition(update);
     if (err != ESP_OK) return send_err(req, 500, "set boot partition failed");
 
-    ESP_LOGI(TAG, "OTA ok, %d bytes, restarting", received);
+    ESP_LOGI(TAG, "OTA %s ok, %d bytes, restarting", incoming.version, received);
     send_err(req, 0, "ota ok, restarting");
     audio_service_poweroff_sound();
     vTaskDelay(pdMS_TO_TICKS(300));
@@ -499,6 +556,9 @@ static esp_err_t static_handler(httpd_req_t *req) {
         else if (strcmp(ext, ".png") == 0) httpd_resp_set_type(req, "image/png");
         else if (strcmp(ext, ".ico") == 0) httpd_resp_set_type(req, "image/x-icon");
     }
+    /* index.html 不缓存：固件发版后浏览器立刻拿到新入口，避免旧 JS 继续跑 */
+    if (strcmp(path, "/spiffs/www/index.html") == 0)
+        httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
     char *chunk = (char *)malloc(1024);
     if (!chunk) {
         fclose(f);
@@ -518,8 +578,9 @@ esp_err_t http_server_start(app_config_t *cfg) {
     s_cfg = cfg;
     httpd_config_t conf = HTTPD_DEFAULT_CONFIG();
     conf.max_uri_handlers = 16;
-    /* 门户代理会在本任务栈上跑 esp_http_client（含可能的 TLS 握手） */
-    conf.stack_size = 16 * 1024;
+    /* 门户代理会在本任务栈上跑 esp_http_client（含可能的 TLS 握手）。
+     * 12KB 是底线：mbedtls 开了 EXTERNAL_MEM 后握手栈峰值 ~6KB；再低会碰穿。 */
+    conf.stack_size = 12 * 1024;
     /* SPIFFS/NVS/OTA disable flash cache. Their caller's stack must be in DRAM. */
     conf.task_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     conf.uri_match_fn = httpd_uri_match_wildcard;

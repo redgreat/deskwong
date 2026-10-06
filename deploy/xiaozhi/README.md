@@ -1,6 +1,6 @@
 # 小智后端部署
 
-本目录部署 `xinnan-tech/xiaozhi-esp32-server` 完整版。宿主机端口为：WebSocket `8031`、智控台 `8032`、OTA/视觉接口 `8033`。
+本目录部署 `xinnan-tech/xiaozhi-esp32-server` 完整版。宿主机端口为：WebSocket `8031`、智控台 `8032`、视觉(mcp)接口 `8033`。完整版的设备 OTA（设备注册、激活码绑定智能体、下发 websocket 地址与 token）由 manager-api 提供，与智控台同端口 `8032`；Python 服务端 `8033` 的 OTA 仅用于无智控台的轻量部署，公网不要把设备 OTA 指过去。
 
 ## 数据库和 Redis
 
@@ -48,7 +48,16 @@ manager-api:
   secret: 从智控台复制的server.secret
 ```
 
-执行 `docker compose restart server`。在智控台配置 LLM、ASR、TTS 的密钥并创建智能体。
+执行 `docker compose restart server`。
+
+仍以超级管理员进入「参数管理」，配置设备侧地址（OTA 会把它们下发给设备）：
+
+- `server.websocket`：`wss://voice.example.com/xiaozhi/v1/`——设备拿到的 WebSocket 地址，填公网域名；
+- `server.ota`：`https://voice.example.com/xiaozhi/ota/`——设备 OTA 地址，公网 Caddy 把 `/xiaozhi/ota/*` 转到智控台端口。
+
+配好后在本机验证：`curl http://127.0.0.1:8032/xiaozhi/ota/` 应返回 `OTA接口运行正常，websocket集群数量：1`。
+
+在智控台配置 LLM、ASR、TTS 的密钥并创建智能体。
 
 ## NPS/NPC 和 Caddy
 
@@ -63,13 +72,19 @@ manager-api:
   -> xiaozhi-server:8000
 ```
 
+OTA 与视觉同理：公网 Caddy 把 `/xiaozhi/ota/*` 转到 NPS `18032`（NPC -> 本机 `127.0.0.1:8032` 智控台，负责设备注册/激活/下发地址），把 `/mcp/*` 转到 `18033`（NPC -> 本机 `127.0.0.1:8033` 视觉）。`Caddyfile.example` 已按此配置。
+
 NPC 只做 TCP 透传，不解析 WS；Caddy 自动处理 WebSocket Upgrade，并把公网 `https/wss` 终止为隧道内的普通 `http/ws`。将 `npc.example.conf` 放到后端所在机器并替换 NPS 地址、端口和 vkey；将 `Caddyfile.example` 放到公网 NPS/Caddy 机器，替换两个域名。
 
-NPS 公网机只需对外开放 80/443 和 NPC 控制端口。`18031~18033` 应由防火墙限制为仅本机 Caddy 可访问。DNS A/AAAA 记录指向公网 Caddy 所在机器。最终板端填写：
+NPS 公网机只需对外开放 80/443 和 NPC 控制端口。`18031~18033` 应由防火墙限制为仅本机 Caddy 可访问。DNS A/AAAA 记录指向公网 Caddy 所在机器。
+
+deskwong 板端网页后台「服务端地址」填写（固件对非 `ws` 开头的地址走 OTA 换取 WebSocket 地址和按设备生成的 token）：
 
 ```text
-wss://voice.example.com/xiaozhi/v1/
+https://voice.example.com/xiaozhi/ota/
 ```
+
+官方固件等直填 WebSocket 地址的场景才用 `wss://voice.example.com/xiaozhi/v1/`。
 
 智控台使用独立域名 `https://xiaozhi-admin.example.com`，建议再加 Caddy `basic_auth`、IP 白名单或 VPN，不要裸露注册入口。
 
@@ -83,7 +98,7 @@ docker compose logs --tail=200 console
 docker compose logs --tail=200 server
 docker compose exec console sh -c 'nc -zvw3 host.docker.internal 3306 && nc -zvw3 host.docker.internal 6379'
 curl -i http://127.0.0.1:8032/xiaozhi/
-curl -i http://127.0.0.1:8033/xiaozhi/ota/
+curl -i http://127.0.0.1:8032/xiaozhi/ota/   # 设备 OTA 在智控台；参数配好后返回「OTA接口运行正常」
 ```
 
 验收标准：两个容器为 `Up`；console 日志出现 `Started AdminApplication`，没有 JDBC、Liquibase 或 Redis 错误；server 日志打印 WebSocket 监听地址。
@@ -124,7 +139,22 @@ npx wscat -c 'wss://voice.example.com/xiaozhi/v1/?device-id=02:00:00:00:00:03&cl
 
 再次发送 hello JSON 并收到服务端 hello，说明 DNS、证书、Caddy、NPC 和服务端整条链路可用。普通浏览器或 `curl` 不能完成 WebSocket 协议测试；首页返回 404 是本示例 Caddyfile 的预期行为。
 
+OTA 公网链路另测：`curl https://voice.example.com/xiaozhi/ota/` 应返回「OTA接口运行正常」文本。
+
 最后使用上游仓库的 `main/xiaozhi-server/test/test_page.html` 做麦克风、ASR、LLM、TTS 完整对话测试。浏览器必须通过 HTTPS 打开测试页才能稳定取得麦克风权限，WebSocket 地址填写公网 `wss://` 地址。完整对话成功后再接开发板。
+
+### 5. deskwong 动态上下文
+
+在智控台进入开发板所用角色的“上下文源”，增加：
+
+```text
+URL: https://ai.example.com/voice/context
+Authorization: Bearer <deskwong context.read_token>
+```
+
+无需手工配置 `device-id`，xiaozhi-server 会随 GET 请求自动添加。角色提示词须保留
+`{{ dynamic_context }}`。先用开发板完成一次快照上报，再依次询问“我今天记录了多少工时”
+“AI额度还有多少”“今天天气和黄历怎么样”“RaceBox今天同步了多少条”。
 
 ## 运维
 

@@ -21,7 +21,15 @@ async function req(path, method = 'GET', body) {
     body: body ? JSON.stringify(body) : undefined
   })
   const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(data.message || res.statusText)
+  if (!res.ok) {
+    // 凭据过期/无效：清掉本地 token 回登录页，避免停在报错的页面
+    if (res.status === 401 && path !== '/api/auth/login') {
+      setToken('')
+      location.reload()
+      throw new Error('登录已过期，请重新登录')
+    }
+    throw new Error(data.message || res.statusText)
+  }
   if (data.code !== 0 && data.code !== undefined) throw new Error(data.message || 'error')
   return data
 }
@@ -41,7 +49,14 @@ export const api = {
       body: file
     })
     const data = await res.json().catch(() => ({}))
-    if (!res.ok) throw new Error(data.message || res.statusText)
+    if (!res.ok) {
+      if (res.status === 401) {
+        setToken('')
+        location.reload()
+        throw new Error('登录已过期，请重新登录')
+      }
+      throw new Error(data.message || res.statusText)
+    }
     return data
   }
 }

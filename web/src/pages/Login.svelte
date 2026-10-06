@@ -1,7 +1,7 @@
 <script>
   import { api, setToken } from '../lib/api.js'
   export let onLogin
-  let user = 'admin'
+  let user = ''
   let pass = ''
   let error = ''
   let loading = false

@@ -1,5 +1,6 @@
 #include <string.h>
 #include <stdio.h>
+#include <stdbool.h>
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
@@ -60,14 +61,15 @@ static int inflate_gzip(char *buf, int total) {
     return (int)dlen;
 }
 
-/* 打开底层 TLS/HTTP 的调试日志（编译期需 CONFIG_LOG_MAXIMUM_LEVEL_DEBUG） */
+/* TLS 调试只记录连接/证书阶段。不能打开 HTTP_CLIENT DEBUG：该组件会把
+ * URL 查询参数和 Authorization 请求头原样写到串口，泄露 API Key/Token。 */
 static void diag_once(void) {
     static bool done = false;
     if (done) return;
     done = true;
     esp_log_level_set("esp-tls", ESP_LOG_DEBUG);
     esp_log_level_set("esp-tls-mbedtls", ESP_LOG_DEBUG);
-    esp_log_level_set("HTTP_CLIENT", ESP_LOG_DEBUG);
+    esp_log_level_set("HTTP_CLIENT", ESP_LOG_INFO);
 }
 
 static void log_heap(const char *stage) {
@@ -146,4 +148,42 @@ cJSON *http_get_json(const char *url, const char *bearer_token) {
         return NULL;
     }
     return cJSON_Parse(g_buf);
+}
+
+bool http_post_json(const char *url, const char *bearer_token, const char *device_id,
+                    const char *json_body) {
+    diag_once();
+    if (!url || !url[0] || !json_body) return false;
+    esp_http_client_config_t cfg = {
+        .url = url,
+        .timeout_ms = 8000,
+        .buffer_size = 1024,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) return false;
+    esp_http_client_set_method(client, HTTP_METHOD_POST);
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_header(client, "Accept-Encoding", "identity");
+    esp_http_client_set_header(client, "User-Agent", "deskwong/1.0");
+    if (device_id && device_id[0]) esp_http_client_set_header(client, "Device-Id", device_id);
+    if (bearer_token && bearer_token[0]) {
+        char hdr[256];
+        snprintf(hdr, sizeof(hdr), "Bearer %s", bearer_token);
+        esp_http_client_set_header(client, "Authorization", hdr);
+    }
+    int body_len = (int)strlen(json_body);
+    bool ok = false;
+    if (esp_http_client_open(client, body_len) == ESP_OK &&
+        esp_http_client_write(client, json_body, body_len) == body_len &&
+        esp_http_client_fetch_headers(client) >= 0) {
+        int status = esp_http_client_get_status_code(client);
+        ok = status >= 200 && status < 300;
+        ESP_LOGI(TAG, "POST http=%d body=%d", status, body_len);
+    } else {
+        ESP_LOGW(TAG, "POST failed");
+    }
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    return ok;
 }

@@ -16,6 +16,7 @@ typedef enum {
     NET_JOB_WEATHER = 0,
     NET_JOB_WORKTIME,
     NET_JOB_AIUSAGE,
+    NET_JOB_VOICE_CONTEXT,
     NET_JOB_MAX
 } net_job_t;
 

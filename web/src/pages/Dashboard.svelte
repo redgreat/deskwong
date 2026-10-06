@@ -1,5 +1,6 @@
 <script>
   import { api, setToken } from '../lib/api.js'
+  import { inspectOtaFile } from '../lib/ota.js'
   export let onLogout
 
   let loading = false
@@ -12,6 +13,7 @@
     timezone: 'Asia/Shanghai', admin_user: 'admin', admin_pass: '',
     weather_location: '', weather_api_url: '',
     weather_key: '', almanac_api_url: '', almanac_key: '', weather_refresh_minutes: 30,
+    almanac_return_seconds: 15, calendar_return_seconds: 15,
     worktime_api_base: '', worktime_token: '', worktime_refresh_minutes: 30,
     aiusage_api_base: '', aiusage_token: '', aiusage_refresh_minutes: 10,
     mqtt_broker: '', mqtt_port: 1883, mqtt_user: '', mqtt_pass: '',
@@ -23,7 +25,7 @@
     remind_worktime_hh: 17, remind_worktime_mm: 0,
     remind_enabled: true,
     voice_enabled: false, voice_wake_word: '你好小智',
-    voice_server_url: '', voice_token: '', voice_device_id: '',
+    voice_server_url: '',
     voice_volume: 60, voice_listen_mode: 0, voice_aec_level: 2,
     voice_reply_seconds: 30, voice_tts_scroll: true, voice_mcp_enabled: true
   }
@@ -40,7 +42,6 @@
       if (cfg.worktime_token === '******') cfg.worktime_token = ''
       if (cfg.aiusage_token === '******') cfg.aiusage_token = ''
       if (cfg.mqtt_pass === '******') cfg.mqtt_pass = ''
-      if (cfg.voice_token === '******') cfg.voice_token = ''
     } catch (e) {
       error = e.message
     }
@@ -110,21 +111,35 @@
   }
 
   let otaFile = null
+  let otaInfo = null
   let otaProgress = false
-  async function onOtaChange(e) {
-    otaFile = e.target.files[0]
+  async function onOtaChange(event) {
+    otaFile = event.target.files[0]
+    otaInfo = null
+    error = ''
+    if (!otaFile) return
+    try {
+      otaInfo = await inspectOtaFile(otaFile)
+    } catch (err) {
+      otaFile = null
+      error = err.message
+      event.target.value = ''
+    }
   }
   async function doOta() {
     if (!otaFile) { error = '请先选择固件文件'; return }
-    if (!confirm(`确定上传 ${otaFile.name} 升级？设备将自动重启。`)) return
-    otaProgress = true
-    error = ''
-    try {
-      await api.uploadOta(otaFile)
-    } catch (e) {
-      error = e.message
-    }
-    otaProgress = false
+    askConfirm({
+      title: '确认 OTA 升级',
+      text: `当前版本：v${health?.firmware_version || '未知'}；目标版本：v${otaInfo.version}。上传 ${otaFile.name} 后设备将自动重启。`,
+      okText: '上传并升级',
+      danger: false,
+      onOk: async () => {
+        otaProgress = true
+        error = ''
+        try { await api.uploadOta(otaFile) } catch (e) { error = e.message }
+        otaProgress = false
+      },
+    })
   }
 
   applyTheme()
@@ -142,6 +157,7 @@
           {health.wifi_connected ? 'WiFi 已连接' : (health.ap_mode ? 'AP 配置模式' : 'WiFi 未连接')}
         </span>
         <span class="ip">{health.ip}</span>
+        <span class="firmware-version">固件 v{health.firmware_version}</span>
       {/if}
     </div>
     <div class="header-actions">
@@ -170,17 +186,11 @@
 
     <section>
       <h2>天气</h2>
-      <p class="section-help">
-        默认走 <strong>Open-Meteo</strong>（免费、无需注册、无需 Key）：位置填「纬度,经度」即可，例如 <code>36.07,120.38</code>。
-        如果使用和风天气，请填写专属 API Host 与 Key。设备会同时请求实况、24 小时和 10 日预报；账号只开放 7 日预报时，第 8 天显示暂无。
-        设备仅在 WiFi 已联网时请求，最低刷新周期 5 分钟。
-      </p>
-      <label>位置（经纬度，或和风 LocationID）<input bind:value={cfg.weather_location} placeholder="例如 36.07,120.38 或 101120201" /></label>
-      <label>实时天气请求地址（留空用 Open-Meteo 默认地址）<input bind:value={cfg.weather_api_url} placeholder="https://api.open-meteo.com/v1/forecast 或 https://你的API-Host/v7/weather/now" /></label>
-      <label>和风天气 Key（留空 = 使用免密钥 Open-Meteo）<input bind:value={cfg.weather_key} placeholder="留空不修改" /></label>
-      <label>黄历 API 地址（留空 = 服务端内置黄历）<input bind:value={cfg.almanac_api_url} placeholder="https://ai.wongcw.cn/almanac" /></label>
+      <label>位置<input bind:value={cfg.weather_location} placeholder="例如 36.07,120.38 或 101120201" /></label>
+      <label>实时天气请求地址<input bind:value={cfg.weather_api_url} placeholder="https://nc2tujbtc3.re.qweatherapi.com/v7/weather/now" /></label>
+      <label>和风天气 Key<input bind:value={cfg.weather_key} placeholder="留空不修改" /></label>
+      <label>黄历 API 地址<input bind:value={cfg.almanac_api_url} placeholder="https://ai.wongcw.cn/almanac" /></label>
       <label>黄历 API Key<input type="password" bind:value={cfg.almanac_key} placeholder="留空不修改" /></label>
-      <p class="muted">默认走服务端内置黄历算法（无需注册）；也可换聚合数据、TianAPI 等公共接口，GET 追加 <code>date/location/key</code>，兼容 <code>data.yi</code>/<code>result.yi</code>。</p>
       <label>天气刷新频率（分钟）<input type="number" bind:value={cfg.weather_refresh_minutes} min="5" max="1440" /></label>
     </section>
 
@@ -199,10 +209,7 @@
     </section>
 
     <section>
-      <h2>RaceBox（MQTT）</h2>
-      {#if health?.mqtt_message}
-        <p class="muted">设备状态：{health.mqtt_message}</p>
-      {/if}
+      <h2>RaceBox</h2>
       <label>Broker 地址<input bind:value={cfg.mqtt_broker} placeholder="例如 mqtt.example.com 或 mqtts://mqtt.example.com:8883" /></label>
       <label>端口<input type="number" bind:value={cfg.mqtt_port} /></label>
       <label>用户名<input bind:value={cfg.mqtt_user} /></label>
@@ -213,7 +220,6 @@
       <div class="setting-row">
         <div>
           <strong>上传后清除内存</strong>
-          <span>默认关闭；测试期间保留设备数据，可重复下载</span>
         </div>
         <label class="switch" aria-label="上传成功后清除 RaceBox 内存">
           <input type="checkbox" bind:checked={cfg.racebox_auto_erase} />
@@ -223,9 +229,15 @@
     </section>
 
     <section>
-      <h2>提醒</h2>
+      <h2>自动返回</h2>
+      <label>天气黄历弹窗自动返回（秒）<input type="number" bind:value={cfg.almanac_return_seconds} min="3" max="600" /></label>
+      <label>日历翻页自动返回（秒）<input type="number" bind:value={cfg.calendar_return_seconds} min="3" max="600" /></label>
+    </section>
+
+    <section>
+      <h2>企业微信提醒</h2>
       <div class="setting-row reminder-master">
-        <div><strong>启用提醒</strong><span>按下方时间在设备上提示</span></div>
+        <div><strong>启用提醒</strong></div>
         <label class="switch" aria-label="启用提醒">
           <input type="checkbox" bind:checked={cfg.remind_enabled} />
           <span class="switch-track"><span class="switch-thumb"></span></span>
@@ -239,27 +251,19 @@
     </section>
 
     <section>
-      <h2>语音（小智）</h2>
-      <p class="section-help">
-        接入 <strong>xiaozhi-esp32</strong>：唤醒后由服务端识别意图，通过 MCP 调用设备工具
-        （翻月、刷新天气/AI/工时、同步 RaceBox）。协议层尚未内置，这里先把配置就位。
-      </p>
+      <h2>语音</h2>
       <div class="setting-row voice-master">
-        <div><strong>启用语音</strong><span>需要服务端已部署 xiaozhi-server</span></div>
+        <div><strong>启用语音</strong></div>
         <label class="switch" aria-label="启用语音">
           <input type="checkbox" bind:checked={cfg.voice_enabled} />
           <span class="switch-track"><span class="switch-thumb"></span></span>
         </label>
       </div>
       <div class="setting-row">
-        <div><strong>当前语音服务</strong>
-          <span>{cfg.voice_server_url ? '自建服务：' + cfg.voice_server_url : '公共云服务（api.tenclass.net 自动换取地址）'}</span>
-        </div>
+        <div><strong>当前语音服务</strong></div>
         <span class="badge {cfg.voice_server_url ? 'warn' : 'ok'}">{cfg.voice_server_url ? '自建' : '公共云'}</span>
       </div>
       <label>服务端地址<input bind:value={cfg.voice_server_url} placeholder="留空=公共云，或填 wss://xiaozhi.example.com/ws" disabled={!cfg.voice_enabled} /></label>
-      <label>设备 Token<input bind:value={cfg.voice_token} placeholder="留空不修改" disabled={!cfg.voice_enabled} /></label>
-      <label>设备 ID / 激活码<input bind:value={cfg.voice_device_id} disabled={!cfg.voice_enabled} /></label>
       <label>唤醒词<input bind:value={cfg.voice_wake_word} disabled={!cfg.voice_enabled} /></label>
       <label>监听方式
         <select bind:value={cfg.voice_listen_mode} disabled={!cfg.voice_enabled}>
@@ -272,14 +276,14 @@
       <label>回声消除强度（0-3）<input type="number" bind:value={cfg.voice_aec_level} min="0" max="3" disabled={!cfg.voice_enabled} /></label>
       <label>单次对话最长（秒）<input type="number" bind:value={cfg.voice_reply_seconds} min="5" max="120" disabled={!cfg.voice_enabled} /></label>
       <div class="setting-row">
-        <div><strong>回答文字滚动显示</strong><span>在屏幕底部滚动显示 TTS 文本</span></div>
+        <div><strong>回答文字滚动显示</strong></div>
         <label class="switch" aria-label="回答文字滚动显示">
           <input type="checkbox" bind:checked={cfg.voice_tts_scroll} disabled={!cfg.voice_enabled} />
           <span class="switch-track"><span class="switch-thumb"></span></span>
         </label>
       </div>
       <div class="setting-row">
-        <div><strong>允许 MCP 控制设备</strong><span>服务端可调用翻月、刷新、同步等工具</span></div>
+        <div><strong>允许 MCP 控制设备</strong></div>
         <label class="switch" aria-label="允许 MCP 控制设备">
           <input type="checkbox" bind:checked={cfg.voice_mcp_enabled} disabled={!cfg.voice_enabled} />
           <span class="switch-track"><span class="switch-thumb"></span></span>
@@ -295,6 +299,7 @@
 
   <section class="sysops">
     <h2>系统操作</h2>
+    {#if health}<p class="section-help">当前固件：<strong>v{health.firmware_version}</strong>（{health.running_partition}）</p>{/if}
     <div class="sysops-row">
       <button class="button secondary" type="button" on:click={doRestart}>重启设备</button>
       <button class="button danger" type="button" on:click={doFactoryReset}>恢复出厂设置</button>
@@ -305,6 +310,11 @@
         {otaProgress ? '上传中...' : 'OTA 升级'}
       </button>
     </div>
+    {#if otaInfo}
+      <p class="ota-info">已识别 deskwong OTA 应用：v{otaInfo.version}，{(otaInfo.size / 1024 / 1024).toFixed(2)} MB。factory 全量包不能从网页上传。</p>
+    {:else}
+      <p class="section-help ota-help">请选择 GitHub Release 中的 <code>deskwong-ota-v*.bin</code>；<code>deskwong-factory-v*.bin</code> 仅供 USB 全量刷机。</p>
+    {/if}
   </section>
   {#if confirmBox}
     <div class="modal-mask" role="presentation" on:click|self={closeConfirm}>
@@ -342,6 +352,7 @@
   .badge.ok { background: var(--success-soft); color: var(--success); }
   .badge.warn { background: var(--warning-soft); color: var(--warning); }
   .ip { color: var(--muted); font-size: 13px; margin-left: 10px; }
+  .firmware-version { color: var(--muted); font-size: 12px; margin-left: 10px; }
   .icon-button { width: 38px; height: 38px; display: grid; place-items: center; padding: 0; border: 1px solid var(--border); border-radius: 11px; background: var(--card); color: var(--text); box-shadow: var(--shadow-sm); cursor: pointer; font-size: 19px; transition: transform .16s, border-color .16s, background .16s; }
   .icon-button:hover { transform: translateY(-1px); border-color: var(--accent); background: var(--accent-soft); }
   section { background: var(--card); border: 1px solid var(--border-subtle); border-radius: 16px; padding: 20px; margin-bottom: 16px; box-shadow: var(--shadow); transition: background .2s, border-color .2s; }
@@ -384,6 +395,8 @@
   .sysops-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
   .ota-row { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border-subtle); }
   .ota-row input[type=file] { flex: 1 1 320px; margin: 0; font-size: 13px; }
+  .ota-info { margin: 10px 0 0; color: var(--success); font-size: 13px; }
+  .ota-help { margin: 10px 0 0; }
   .ok { color: var(--success); font-size: 14px; }
   .err { color: var(--danger); font-size: 13px; margin-bottom: 12px; }
   @media (max-width: 650px) {

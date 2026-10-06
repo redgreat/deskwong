@@ -5,6 +5,7 @@
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "nvs.h"
 #include "http_util.h"
 #include "worktime_service.h"
@@ -37,6 +38,12 @@ static portMUX_TYPE s_pending_mux = portMUX_INITIALIZER_UNLOCKED;
 static StaticTask_t *s_cache_tcb;
 static StackType_t *s_cache_stack;
 static TaskHandle_t s_cache_task;
+static SemaphoreHandle_t s_load_mutex;
+static volatile bool s_save_pending;
+static volatile bool s_load_pending;
+static int s_load_year, s_load_month;
+static worktime_summary_t *s_load_out;
+static TaskHandle_t s_load_caller;
 
 static void cache_key(char *key, size_t len, int year, int month) {
     snprintf(key, len, "wt_%04d%02d", year, month);
@@ -83,15 +90,56 @@ static void cache_write(const worktime_summary_t *s) {
     nvs_close(h);
 }
 
-static void cache_save_worker(void *arg) {
+static void cache_read(int year, int month, worktime_summary_t *out) {
+    worktime_summary_t result;
+    memset(&result, 0, sizeof(result));
+    result.year = year;
+    result.month = month;
+    nvs_handle_t h;
+    if (nvs_open(WT_NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
+        worktime_cache_blob_t blob;
+        size_t len = sizeof(blob);
+        char key[16];
+        cache_key(key, sizeof(key), year, month);
+        if (nvs_get_blob(h, key, &blob, &len) == ESP_OK && len == sizeof(blob) &&
+            blob.magic == WT_CACHE_MAGIC) {
+            result.recorded_hours = blob.recorded_hours;
+            result.expected_hours = blob.expected_hours;
+            memcpy(result.daily_hours, blob.daily_hours, sizeof(result.daily_hours));
+            ESP_LOGI(TAG, "cache loaded %04d-%02d: %.1f/%.1f", year, month,
+                     result.recorded_hours, result.expected_hours);
+        }
+        nvs_close(h);
+    }
+    normalize(&result);
+    *out = result;  /* caller may have a PSRAM stack; flash cache is enabled again here */
+}
+
+static void cache_worker(void *arg) {
     (void)arg;
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        bool load;
+        int year = 0, month = 0;
+        worktime_summary_t *out = NULL;
+        TaskHandle_t caller = NULL;
         worktime_summary_t snap;
+        bool save;
         taskENTER_CRITICAL(&s_pending_mux);
-        snap = s_pending;
+        load = s_load_pending;
+        if (load) {
+            year = s_load_year; month = s_load_month;
+            out = s_load_out; caller = s_load_caller;
+            s_load_pending = false;
+        }
+        save = s_save_pending;
+        if (save) { snap = s_pending; s_save_pending = false; }
         taskEXIT_CRITICAL(&s_pending_mux);
-        cache_write(&snap);
+        if (load) {
+            cache_read(year, month, out);
+            xTaskNotifyGive(caller);
+        }
+        if (save) cache_write(&snap);
     }
 }
 
@@ -100,6 +148,7 @@ static void cache_store(const worktime_summary_t *s) {
     if (!s_cache_task) return;
     taskENTER_CRITICAL(&s_pending_mux);
     s_pending = *s;
+    s_save_pending = true;
     taskEXIT_CRITICAL(&s_pending_mux);
     xTaskNotifyGive(s_cache_task);
 }
@@ -111,32 +160,22 @@ void worktime_service_init(const char *base, const char *token) {
     s_cache_stack = heap_caps_calloc(WT_CACHE_STACK, sizeof(*s_cache_stack),
                                      MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (s_cache_tcb && s_cache_stack)
-        s_cache_task = xTaskCreateStatic(cache_save_worker, "wt_cache", WT_CACHE_STACK, NULL, 2,
+        s_cache_task = xTaskCreateStatic(cache_worker, "wt_cache", WT_CACHE_STACK, NULL, 2,
                                          s_cache_stack, s_cache_tcb);
+    s_load_mutex = xSemaphoreCreateMutex();
     if (!s_cache_task) ESP_LOGE(TAG, "worktime cache task allocation failed");
 }
 
 void worktime_service_load(int year, int month, worktime_summary_t *out) {
-    memset(out, 0, sizeof(*out));
-    out->year = year;
-    out->month = month;
-    nvs_handle_t h;
-    if (nvs_open(WT_NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
-        worktime_cache_blob_t blob;
-        size_t len = sizeof(blob);
-        char key[16];
-        cache_key(key, sizeof(key), year, month);
-        if (nvs_get_blob(h, key, &blob, &len) == ESP_OK && len == sizeof(blob) &&
-            blob.magic == WT_CACHE_MAGIC) {
-            out->recorded_hours = blob.recorded_hours;
-            out->expected_hours = blob.expected_hours;
-            memcpy(out->daily_hours, blob.daily_hours, sizeof(out->daily_hours));
-            ESP_LOGI(TAG, "cache loaded %04d-%02d: %.1f/%.1f", year, month,
-                     out->recorded_hours, out->expected_hours);
-        }
-        nvs_close(h);
-    }
-    normalize(out);
+    if (!s_cache_task || !s_load_mutex) { cache_read(year, month, out); return; }
+    xSemaphoreTake(s_load_mutex, portMAX_DELAY);
+    taskENTER_CRITICAL(&s_pending_mux);
+    s_load_year = year; s_load_month = month; s_load_out = out;
+    s_load_caller = xTaskGetCurrentTaskHandle(); s_load_pending = true;
+    taskEXIT_CRITICAL(&s_pending_mux);
+    xTaskNotifyGive(s_cache_task);
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    xSemaphoreGive(s_load_mutex);
 }
 
 int worktime_service_fetch(int year, int month, worktime_summary_t *out) {
