@@ -100,6 +100,12 @@ typedef struct {
 
     char last_err[160];
     volatile bool stopping;
+    volatile bool followup_waiting;
+    uint32_t turn_id;
+    int64_t turn_started_us;
+    volatile bool first_uplink_logged;
+    volatile bool first_audio_logged;
+    volatile bool playback_logged;
 } voice_ctx_t;
 
 static voice_ctx_t s;
@@ -112,6 +118,25 @@ static void playback_task(void *arg);
 static void mark_voice_activity(void)
 {
     s_last_voice_activity_tick = xTaskGetTickCount();
+}
+
+static void timing_begin(const char *stage)
+{
+    s.turn_id++;
+    s.turn_started_us = esp_timer_get_time();
+    s.first_uplink_logged = false;
+    s.first_audio_logged = false;
+    s.playback_logged = false;
+    ESP_LOGI(TAG, "voice_timing session=%s turn=%u stage=%s elapsed_ms=0",
+             s.session_id[0] ? s.session_id : "pending", (unsigned)s.turn_id, stage);
+}
+
+static void timing_log(const char *stage)
+{
+    int64_t elapsed_ms = s.turn_started_us > 0 ? (esp_timer_get_time() - s.turn_started_us) / 1000 : -1;
+    ESP_LOGI(TAG, "voice_timing session=%s turn=%u stage=%s elapsed_ms=%lld",
+             s.session_id[0] ? s.session_id : "pending", (unsigned)s.turn_id, stage,
+             (long long)elapsed_ms);
 }
 
 /* ------------------------------------------------------------------ 基础工具 */
@@ -462,6 +487,10 @@ static void playback_task(void *arg)
     voice_audio_packet_t *pkt = NULL;
     for (;;) {
         if (xQueueReceive(s.audio_queue, &pkt, portMAX_DELAY) == pdTRUE && pkt) {
+            if (!s.playback_logged) {
+                s.playback_logged = true;
+                timing_log("playback_started");
+            }
             xSemaphoreTake(s.audio_mutex, portMAX_DELAY);
             handle_audio(pkt->data, pkt->len);
             xSemaphoreGive(s.audio_mutex);
@@ -513,6 +542,8 @@ static void handle_json(const char *txt, int len)
         if (s.events) xEventGroupSetBits(s.events, HELLO_BIT);
     } else if (strcmp(type, "stt") == 0) {
         mark_voice_activity();
+        s.followup_waiting = false;
+        timing_log("stt_received");
         cJSON *txt2 = cJSON_GetObjectItem(root, "text");
         const char *v = cJSON_IsString(txt2) ? txt2->valuestring : NULL;
         if (v) notify(VOICE_LISTENING, v, NULL);
@@ -525,13 +556,19 @@ static void handle_json(const char *txt, int len)
         cJSON *st = cJSON_GetObjectItem(root, "state");
         const char *v = cJSON_IsString(st) ? st->valuestring : "";
         if (strcmp(v, "start") == 0) {
+            timing_log("tts_started");
             notify(VOICE_SPEAKING, NULL, NULL);
         } else if (strcmp(v, "stop") == 0) {
             /* 自动续听：回到采集态并重新开启一轮 listen——服务端以 listen start
              * 为识别轮次边界，不发的话后续语音全被忽略。 */
+            timing_begin("followup_started");
             send_listen("start", "auto");
+            timing_log("listen_sent");
+            mark_voice_activity();
+            s.followup_waiting = true;
             notify(VOICE_LISTENING, NULL, NULL);
         } else if (strcmp(v, "sentence_start") == 0) {
+            timing_log("tts_text_received");
             cJSON *txt2 = cJSON_GetObjectItem(root, "text");
             const char *sv = cJSON_IsString(txt2) ? txt2->valuestring : NULL;
             notify(VOICE_SPEAKING, sv, NULL);
@@ -602,6 +639,10 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t event_id,
             if (data->payload_len != data->data_len) {
                 ESP_LOGW(TAG, "分片音频帧 %d/%d 忽略", data->data_len, data->payload_len);
                 break;
+            }
+            if (!s.first_audio_logged) {
+                s.first_audio_logged = true;
+                timing_log("first_audio_received");
             }
             queue_audio((const uint8_t *)data->data_ptr, data->data_len);
         } else if (data->op_code == 0x1) {
@@ -684,6 +725,10 @@ static void mic_task(void *arg)
                              (unsigned)uxTaskGetStackHighWaterMark(NULL));
                     slow_frames = 0;
                     send_failures = 0;
+                }
+                if (sent >= 0 && !s.first_uplink_logged) {
+                    s.first_uplink_logged = true;
+                    timing_log("first_uplink");
                 }
             } else {
                 ESP_LOGW(TAG, "opus_encode 失败：%d", n);
@@ -877,11 +922,16 @@ static void preconnect_task(void *arg)
     for (;;) {
         TickType_t now = xTaskGetTickCount();
         TickType_t last = s_last_voice_activity_tick;
+        uint32_t idle_limit_ms = s.followup_waiting ? 10000 : 30000;
         if (s.state == VOICE_LISTENING && last != 0 && !s_start_busy &&
-            (now - last) >= pdMS_TO_TICKS(30000)) {
-            ESP_LOGW(TAG, "listening idle for 30s; closing session and resuming wake word");
+            (now - last) >= pdMS_TO_TICKS(idle_limit_ms)) {
+            ESP_LOGW(TAG, "%s idle for %lus; closing logical conversation and resuming wake word",
+                     s.followup_waiting ? "followup" : "listening",
+                     (unsigned long)(idle_limit_ms / 1000));
+            timing_log(s.followup_waiting ? "followup_timeout" : "watchdog_timeout");
             voice_service_stop();
             s_last_voice_activity_tick = 0;
+            s.followup_waiting = false;
             vTaskDelay(pdMS_TO_TICKS(1000));
             continue;
         }
@@ -930,6 +980,7 @@ static bool voice_start_internal(bool from_wake)
         set_error("wake listener suspend timeout");
         return false;
     }
+    if (s.turn_started_us == 0) timing_begin(from_wake ? "wake_detected" : "manual_started");
     notify(VOICE_CONNECTING, NULL, NULL);
     lock();
     s.last_err[0] = 0;
@@ -962,7 +1013,9 @@ static bool voice_start_internal(bool from_wake)
     /* 唤醒触发时先上报 detect，再明确告知服务端开始听 */
     if (from_wake) send_listen_detect();
     send_listen("start", "auto");
+    timing_log("listen_sent");
     mark_voice_activity();
+    s.followup_waiting = false;
     s.mic_run = true;
     notify(VOICE_LISTENING, NULL, NULL);
     unlock();
@@ -1010,6 +1063,7 @@ static void start_worker(void *arg)
 bool voice_service_request_start(bool from_wake)
 {
     if (!s.inited || s_start_busy) return false;
+    timing_begin(from_wake ? "wake_detected" : "manual_started");
     s_start_busy = true;
     s_start_from_wake = from_wake;
     BaseType_t r = xTaskCreatePinnedToCoreWithCaps(start_worker, "voice_start", 32 * 1024,
@@ -1035,6 +1089,8 @@ void voice_service_stop(void)
     }
     unlock();
     teardown(true);
+    s.followup_waiting = false;
+    s.turn_started_us = 0;
     ESP_LOGI(TAG, "语音会话已结束");
 }
 

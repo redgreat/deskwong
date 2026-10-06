@@ -93,11 +93,19 @@ if ($autoListenCount -ne 2 -or $voiceSource -match 'send_listen\("start",\s*"man
     throw "Voice listen sequence must use auto mode for initial and TTS follow-up listening"
 }
 Write-Host "Voice auto-listen protocol inspection passed"
-if ($voiceSource -notmatch 'listening idle for 30s' -or
+if ($voiceSource -notmatch 'followup_waiting \? 10000 : 30000' -or
+    $voiceSource -notmatch 'stage=%s elapsed_ms=' -or
     $voiceSource -notmatch 'retry_seconds\[\].*10, 30, 60, 300') {
     throw "Voice lifecycle timeout/backoff inspection failed"
 }
 Write-Host "Voice lifecycle timeout/backoff inspection passed"
+$wakeSource = Get-Content -Raw -LiteralPath (Join-Path $services "voice_wake.c")
+if ($wakeSource -notmatch 'set_det_threshold' -or
+    $wakeSource -notmatch '3000000' -or
+    $wakeSource -notmatch 'cooldown_drops') {
+    throw "Wake threshold/cooldown inspection failed"
+}
+Write-Host "Wake threshold/cooldown inspection passed"
 
 & node (Join-Path $PSScriptRoot "web/ota_test.mjs")
 if ($LASTEXITCODE) { throw "Web OTA image inspection failed" }

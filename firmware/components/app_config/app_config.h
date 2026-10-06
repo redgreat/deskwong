@@ -63,6 +63,7 @@ typedef struct {
     char voice_token[CFG_STR_MAX];        // 设备鉴权（写入脱敏）
     char voice_device_id[64];             // 设备 ID / 激活码
     uint8_t voice_volume;                 // 0..100
+    uint8_t voice_wake_threshold;         // 40..99，越高越不易误唤醒
     uint8_t voice_listen_mode;            // 0=唤醒词 1=长按 2=两者
     uint8_t voice_aec_level;              // 回声消除强度 0..3
     uint8_t voice_reply_seconds;          // 单次对话最长时长

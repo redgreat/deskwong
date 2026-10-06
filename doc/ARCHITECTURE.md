@@ -25,6 +25,8 @@ XiaoZhi context provider ─HTTPS GET + device-id─> service ─> prompt dynami
 - `firmware/main/main.cpp` 负责组件初始化与任务编排。
 - `net_scheduler` 串行运行天气、工时和 AI 请求，避免共享网络缓冲并发。
 - 语音唤醒任务固定在 core 1 以低优先级运行，避免与固定在 core 0 的 WiFi/TCPIP/NimBLE 争抢；联网后后台任务预取 OTA 地址/token 并建立 WSS/hello，唤醒热路径只发送 detect/start。进入会话后，麦克风任务在 core 1 编码并以有界超时发送 Opus；下行 Opus 回调只复制入队，由独立 32KB PSRAM 栈任务解码和写 I2S。WebSocket 任务本身使用 16KB PSRAM 栈，禁止长期占用紧张的内部 RAM；创建失败时才回退内部栈。WebSocket 文本与音频共用独立 TX 互斥串行发送，上行网络等待不持有语音生命周期互斥锁。网络回调只保存最新 UI 快照，200ms UI 任务在取得 LVGL 锁后补绘，避免一次锁失败丢失弹窗。唤醒监听每 10 秒输出一次音量、推理耗时和栈余量，语音上行每 50 帧输出慢帧与发送失败计数，供实机区分采集、CPU 和网络故障。
+- 语音链路采用双层状态机：底层 WSS 可以预连接/重连保活，上层 `conversation turn` 独立计时。WakeNet 候选命中后进入首轮采集；服务端 ASR 与声纹并行，声纹命中只为该轮附加匿名 speaker ID 并隔离个性化记忆，未知或超时按匿名身份继续普通问答。TTS结束后进入10秒追问窗口，超时关闭逻辑对话并清除 conversation 标识，不因保持传输热连接而沿用旧上下文。
+- 板端与服务端使用同一 `session_id/turn_id` 输出结构化阶段时间点。板端负责 wake/listen/uplink/STT/TTS首帧/播放，xiaozhi-server负责VAD/ASR/声纹/上下文/LLM/TTS；由日志差值定位瓶颈。上下文提供方只读本地SQLite快照，不在唤醒热路径扇出外部请求。
 - 工时按月经 NVS 缓存（`deskwong` 命名空间的 `wt_YYYYMM` 快照）：开机先显示缓存或本地应收工时，网络任务返回后覆盖，拉取失败保留旧值，主屏不出现 `--`；缓存写入由内部 RAM 栈的小任务完成，避免 flash cache 关闭时访问 PSRAM 栈。
 - `main_screen.cpp` 是主屏布局唯一实现；`sync_screen.cpp` 是 RaceBox 同步覆盖层。
 - `weather_almanac_screen.cpp` 是天气黄历覆盖层：共享 RaceBox 弹窗的黑白卡片视觉语言，显示今天起 7 天、当前起 7 个小时和当天宜忌；温度与日期/小时由四个轻量文本行对象绘制，每列按字库实际像素宽度独立居中，避免双行标签在实屏上产生左对齐错觉，同时控制 128KB LVGL 对象池占用。按键任务维护主屏、日历翻页和天气黄历三种界面状态。

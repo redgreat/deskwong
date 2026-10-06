@@ -75,6 +75,7 @@ void app_config_defaults(app_config_t *cfg) {
     strcpy(cfg->voice_token, "");
     strcpy(cfg->voice_device_id, "");
     cfg->voice_volume = 60;
+    cfg->voice_wake_threshold = 95;
     cfg->voice_listen_mode = 0;
     cfg->voice_aec_level = 2;
     cfg->voice_reply_seconds = 30;
@@ -159,6 +160,8 @@ esp_err_t app_config_load(app_config_t *cfg) {
     get_str(h, "vo_token", cfg->voice_token, sizeof(cfg->voice_token));
     get_str(h, "vo_devid", cfg->voice_device_id, sizeof(cfg->voice_device_id));
     nvs_get_u8(h, "vo_vol", &cfg->voice_volume);
+    nvs_get_u8(h, "vo_wk_th", &cfg->voice_wake_threshold);
+    if (cfg->voice_wake_threshold < 40 || cfg->voice_wake_threshold > 99) cfg->voice_wake_threshold = 95;
     nvs_get_u8(h, "vo_mode", &cfg->voice_listen_mode);
     nvs_get_u8(h, "vo_aec", &cfg->voice_aec_level);
     nvs_get_u8(h, "vo_secs", &cfg->voice_reply_seconds);
@@ -237,6 +240,7 @@ esp_err_t app_config_save(const app_config_t *cfg) {
     if ((err = nvs_set_str(h, "vo_token", cfg->voice_token)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_str(h, "vo_devid", cfg->voice_device_id)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_u8(h, "vo_vol", cfg->voice_volume)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_u8(h, "vo_wk_th", cfg->voice_wake_threshold)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_u8(h, "vo_mode", cfg->voice_listen_mode)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_u8(h, "vo_aec", cfg->voice_aec_level)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_u8(h, "vo_secs", cfg->voice_reply_seconds)) != ESP_OK) { nvs_close(h); return err; }
