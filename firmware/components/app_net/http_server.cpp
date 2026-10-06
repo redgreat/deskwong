@@ -172,6 +172,7 @@ static esp_err_t config_get_handler(httpd_req_t *req) {
     cJSON_AddStringToObject(d, "voice_token", stored.voice_token[0] ? "******" : "");
     cJSON_AddStringToObject(d, "voice_device_id", stored.voice_device_id);
     cJSON_AddNumberToObject(d, "voice_volume", stored.voice_volume);
+    cJSON_AddNumberToObject(d, "voice_wake_threshold", stored.voice_wake_threshold);
     cJSON_AddNumberToObject(d, "voice_listen_mode", stored.voice_listen_mode);
     cJSON_AddNumberToObject(d, "voice_aec_level", stored.voice_aec_level);
     cJSON_AddNumberToObject(d, "voice_reply_seconds", stored.voice_reply_seconds);
@@ -332,6 +333,8 @@ static esp_err_t config_put_handler(httpd_req_t *req) {
     set_str_field(j, "voice_device_id", pending.voice_device_id, sizeof(pending.voice_device_id));
     it = cJSON_GetObjectItem(j, "voice_volume");
     if (it && cJSON_IsNumber(it)) pending.voice_volume = (uint8_t)(it->valueint > 100 ? 100 : (it->valueint < 0 ? 0 : it->valueint));
+    it = cJSON_GetObjectItem(j, "voice_wake_threshold");
+    if (it && cJSON_IsNumber(it)) pending.voice_wake_threshold = (uint8_t)(it->valueint > 99 ? 99 : (it->valueint < 40 ? 40 : it->valueint));
     it = cJSON_GetObjectItem(j, "voice_listen_mode");
     if (it && cJSON_IsNumber(it)) pending.voice_listen_mode = (uint8_t)(it->valueint > 2 ? 2 : it->valueint);
     it = cJSON_GetObjectItem(j, "voice_aec_level");

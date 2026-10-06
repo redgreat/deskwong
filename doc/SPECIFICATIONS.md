@@ -142,6 +142,10 @@
 - 语音开始和每次 TTS stop 后的续听消息使用 `{"type":"listen","state":"start","mode":"auto"}`。`manual` 模式只有在实现按键按住说话或本地端点检测并发送 `listen stop` 时才可使用。实机验收必须看到每轮上行后返回 STT、TTS，不能只以 Opus 帧发送成功判定追问链路通过。
 - 语音服务记录最近一次 start/STT/TTS 活动时刻；处于 listening 且 30 秒无下行活动时，由非麦克风任务执行 stop/teardown 并恢复 WakeNet。后台预连接以有效 IPv4 为前提，失败退避序列至少为 10/30/60/300 秒，成功 hello 后复位退避；日志记录阶段与错误但不得打印 token。
 - 语音问题/回答标签更新文本后，按 LVGL 实际内容高度重新计算 Y：在各自 30px 正文区域内将单行或两行文本整体垂直居中；内容高度超过区域时保持两行裁切规则，不允许覆盖分隔线或标题栏。
+- WakeNet 初始化后记录实际检测模式和阈值；后台调整范围必须限制在 ESP-SR 支持区间，修改后无需保存原始音频。唤醒候选命中后进入至少3秒 refractory/cooldown，避免同一段电视或尾音重复触发；统计候选命中、冷却丢弃和无语音超时次数。
+- 声纹服务返回结果应包含匿名 speaker ID、similarity、threshold 与 decision。命中已注册说话人时仅用于个性化和按 speaker ID 隔离记忆；未命中、低置信度、网络错误、超时或空结果统一标记 anonymous，仍允许调用普通 LLM/MCP，但不得读取或写入某个已注册用户的私有记忆。阈值校准报告至少包含注册人的留出样本和其他家庭成员样本的最低/最高/分位相似度，生产阈值留出防止错误归属的安全间隔。
+- 正常追问窗口从设备确认 TTS 播放结束后开始，默认10秒；窗口到期发送会话结束/abort并恢复WakeNet。30秒无下行活动只保留为卡死保护。新的唤醒必须生成新 turn 链，服务端不得复用超过追问窗口的旧 conversation memory。
+- 延迟日志统一使用单调时钟计算并携带 `session_id`、递增 `turn_id`、`stage`、`elapsed_ms`。板端至少覆盖 `wake_detected`、`listen_sent`、`first_uplink`、`stt_received`、`tts_text_received`、`first_audio_received`、`playback_started`；服务端至少覆盖 `vad_end`、`asr_done`、`speaker_done`、`context_done`、`llm_first_token`、`tts_first_chunk`。验收取不少于10轮的P50/P95，不能用单轮最快值。
 
 ## 6. 测试规范
 

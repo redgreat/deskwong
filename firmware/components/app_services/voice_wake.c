@@ -52,6 +52,9 @@ typedef struct {
     volatile int  park_gen;    /* 任务每次进入停驻分支 +1，suspend 等它变化 */
     volatile bool in_read;     /* 正在 esp_codec_dev_read */
     volatile bool armed;       /* 防重触发：clean 后见到一帧未命中才允许再触发 */
+    int64_t last_trigger_us;
+    uint32_t candidate_hits;
+    uint32_t cooldown_drops;
 
     TaskHandle_t task;
 } voice_wake_ctx_t;
@@ -144,7 +147,15 @@ static void wake_task(void *arg)
          * dl_convq_queue_bzero 会解引用空指针直接 panic（LoadProhibited，
          * addr2line 实锤）。唤醒状态机发完一次 DETECTED 后自动复位，
          * 防重触发交给 armed 标志。 */
+        s.candidate_hits++;
         if (!s.armed) continue;
+        if (s.last_trigger_us > 0 && now_us - s.last_trigger_us < 3000000) {
+            s.cooldown_drops++;
+            ESP_LOGW(TAG, "wake candidate ignored by 3s cooldown candidates=%u drops=%u",
+                     (unsigned)s.candidate_hits, (unsigned)s.cooldown_drops);
+            continue;
+        }
+        s.last_trigger_us = now_us;
 
         ESP_LOGI(TAG, "唤醒词命中，启动语音会话（wake栈余量=%u 字）",
                  (unsigned)uxTaskGetStackHighWaterMark(NULL));
@@ -196,10 +207,14 @@ void voice_wake_init(const app_config_t *cfg)
         ESP_LOGE(TAG, "唤醒引擎创建失败（内存不足？）");
         return;
     }
+    int threshold_percent = (cfg && cfg->voice_wake_threshold >= 40 && cfg->voice_wake_threshold <= 99)
+                                ? cfg->voice_wake_threshold : 95;
+    int threshold_rc = s.wn->set_det_threshold(s.wn_data, threshold_percent / 100.0f, 1);
+    float actual_threshold = s.wn->get_det_threshold(s.wn_data, 1);
     s.chunk = s.wn->get_samp_chunksize(s.wn_data);
-    ESP_LOGI(TAG, "唤醒模型：%s chunk=%d 采样（%dms） rate=%d", wn_name,
+    ESP_LOGI(TAG, "唤醒模型：%s chunk=%d 采样（%dms） rate=%d threshold=%.2f set_rc=%d cooldown=3000ms", wn_name,
              s.chunk, s.chunk * 1000 / s.wn->get_samp_rate(s.wn_data),
-             s.wn->get_samp_rate(s.wn_data));
+             s.wn->get_samp_rate(s.wn_data), actual_threshold, threshold_rc);
 
     s.stereo_buf = (int16_t *)heap_caps_malloc(s.chunk * 2 * sizeof(int16_t),
                                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);

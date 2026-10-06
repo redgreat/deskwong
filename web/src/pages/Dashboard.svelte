@@ -26,7 +26,7 @@
     remind_enabled: true,
     voice_enabled: false, voice_wake_word: '你好小智',
     voice_server_url: '',
-    voice_volume: 60, voice_listen_mode: 0, voice_aec_level: 2,
+    voice_volume: 60, voice_wake_threshold: 95, voice_listen_mode: 0, voice_aec_level: 2,
     voice_reply_seconds: 30, voice_tts_scroll: true, voice_mcp_enabled: true
   }
 
@@ -273,6 +273,7 @@
         </select>
       </label>
       <label>音量（0-100）<input type="number" bind:value={cfg.voice_volume} min="0" max="100" disabled={!cfg.voice_enabled} /></label>
+      <label>唤醒严格度（40-99，越高越不易误唤醒）<input type="number" bind:value={cfg.voice_wake_threshold} min="40" max="99" disabled={!cfg.voice_enabled} /></label>
       <label>回声消除强度（0-3）<input type="number" bind:value={cfg.voice_aec_level} min="0" max="3" disabled={!cfg.voice_enabled} /></label>
       <label>单次对话最长（秒）<input type="number" bind:value={cfg.voice_reply_seconds} min="5" max="120" disabled={!cfg.voice_enabled} /></label>
       <div class="setting-row">
