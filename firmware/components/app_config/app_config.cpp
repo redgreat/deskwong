@@ -68,6 +68,8 @@ void app_config_defaults(app_config_t *cfg) {
     cfg->remind_worktime_hh = 17;
     cfg->remind_worktime_mm = 0;
     cfg->remind_enabled = true;
+    cfg->remind_sign_hold_seconds = 300;
+    cfg->remind_worktime_hold_seconds = 300;
     /* 语音（小智） */
     cfg->voice_enabled = false;              // 协议层未接入前默认关闭
     strcpy(cfg->voice_wake_word, "你好小智");
@@ -75,8 +77,11 @@ void app_config_defaults(app_config_t *cfg) {
     strcpy(cfg->voice_token, "");
     strcpy(cfg->voice_device_id, "");
     cfg->voice_volume = 60;
+    cfg->system_volume = 60;
     cfg->voice_wake_threshold = 95;
     cfg->voice_listen_mode = 0;
+    cfg->voice_quiet_hh_start = 23;
+    cfg->voice_quiet_hh_end = 7;
     cfg->voice_aec_level = 2;
     cfg->voice_reply_seconds = 30;
     cfg->voice_tts_scroll = true;
@@ -152,6 +157,13 @@ esp_err_t app_config_load(app_config_t *cfg) {
     uint8_t ren = cfg->remind_enabled ? 1 : 0;
     nvs_get_u8(h, "rem_en", &ren);
     cfg->remind_enabled = ren != 0;
+    /* 提醒停留秒数：老设备没有这两个键时保持出厂默认 300；越界值拉回合法区间 */
+    nvs_get_u16(h, "rem_sign_hd", &cfg->remind_sign_hold_seconds);
+    if (cfg->remind_sign_hold_seconds < 5 || cfg->remind_sign_hold_seconds > 3600)
+        cfg->remind_sign_hold_seconds = 300;
+    nvs_get_u16(h, "rem_wt_hd", &cfg->remind_worktime_hold_seconds);
+    if (cfg->remind_worktime_hold_seconds < 5 || cfg->remind_worktime_hold_seconds > 3600)
+        cfg->remind_worktime_hold_seconds = 300;
     uint8_t von = cfg->voice_enabled ? 1 : 0;
     nvs_get_u8(h, "vo_en", &von);
     cfg->voice_enabled = von != 0;
@@ -160,9 +172,16 @@ esp_err_t app_config_load(app_config_t *cfg) {
     get_str(h, "vo_token", cfg->voice_token, sizeof(cfg->voice_token));
     get_str(h, "vo_devid", cfg->voice_device_id, sizeof(cfg->voice_device_id));
     nvs_get_u8(h, "vo_vol", &cfg->voice_volume);
+    /* 普通操作音量：老设备没有这个键时保持 60 */
+    nvs_get_u8(h, "sys_vol", &cfg->system_volume);
+    if (cfg->system_volume > 100) cfg->system_volume = 100;
     nvs_get_u8(h, "vo_wk_th", &cfg->voice_wake_threshold);
     if (cfg->voice_wake_threshold < 40 || cfg->voice_wake_threshold > 99) cfg->voice_wake_threshold = 95;
     nvs_get_u8(h, "vo_mode", &cfg->voice_listen_mode);
+    nvs_get_u8(h, "vo_qs", &cfg->voice_quiet_hh_start);
+    nvs_get_u8(h, "vo_qe", &cfg->voice_quiet_hh_end);
+    if (cfg->voice_quiet_hh_start > 23) cfg->voice_quiet_hh_start = 23;
+    if (cfg->voice_quiet_hh_end > 23) cfg->voice_quiet_hh_end = 7;
     nvs_get_u8(h, "vo_aec", &cfg->voice_aec_level);
     nvs_get_u8(h, "vo_secs", &cfg->voice_reply_seconds);
     uint8_t vs = cfg->voice_tts_scroll ? 1 : 0;
@@ -234,14 +253,19 @@ esp_err_t app_config_save(const app_config_t *cfg) {
     if ((err = nvs_set_u8(h, "rem_wt_hh", cfg->remind_worktime_hh)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_u8(h, "rem_wt_mm", cfg->remind_worktime_mm)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_u8(h, "rem_en", cfg->remind_enabled ? 1 : 0)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_u16(h, "rem_sign_hd", cfg->remind_sign_hold_seconds)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_u16(h, "rem_wt_hd", cfg->remind_worktime_hold_seconds)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_u8(h, "vo_en", cfg->voice_enabled ? 1 : 0)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_str(h, "vo_word", cfg->voice_wake_word)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_str(h, "vo_url", cfg->voice_server_url)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_str(h, "vo_token", cfg->voice_token)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_str(h, "vo_devid", cfg->voice_device_id)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_u8(h, "vo_vol", cfg->voice_volume)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_u8(h, "sys_vol", cfg->system_volume)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_u8(h, "vo_wk_th", cfg->voice_wake_threshold)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_u8(h, "vo_mode", cfg->voice_listen_mode)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_u8(h, "vo_qs", cfg->voice_quiet_hh_start)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_u8(h, "vo_qe", cfg->voice_quiet_hh_end)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_u8(h, "vo_aec", cfg->voice_aec_level)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_u8(h, "vo_secs", cfg->voice_reply_seconds)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_u8(h, "vo_scroll", cfg->voice_tts_scroll ? 1 : 0)) != ESP_OK) { nvs_close(h); return err; }

@@ -18,3 +18,10 @@ int64_t time_util_epoch_seconds(const datetime_t *dt) {
 int64_t time_util_diff_seconds(const datetime_t *a, const datetime_t *b) {
     return time_util_epoch_seconds(a) - time_util_epoch_seconds(b);
 }
+
+bool time_util_hour_in_range(int hour, uint8_t start_hh, uint8_t end_hh) {
+    if (start_hh > 23 || end_hh > 23 || start_hh == end_hh) return false;
+    if (hour < 0 || hour > 23) return false;
+    if (start_hh < end_hh) return hour >= start_hh && hour < end_hh;
+    return hour >= start_hh || hour < end_hh;   /* 跨午夜 */
+}

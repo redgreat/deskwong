@@ -56,15 +56,24 @@ typedef struct {
     uint8_t remind_worktime_hh;           // 17
     uint8_t remind_worktime_mm;           // 00
     bool remind_enabled;
+    /* 提醒条屏显停留秒数：到达后未按 KEY 即自动消失（默认 300 秒 = 5 分钟） */
+    uint16_t remind_sign_hold_seconds;     // 企微签到/签退提醒停留，秒（默认 300）
+    uint16_t remind_worktime_hold_seconds; // 工时记录提醒停留，秒（默认 300）
     /* 语音（小智 xiaozhi-esp32）——见 doc/REQUIREMENTS.md */
     bool voice_enabled;                   // 总开关
     char voice_wake_word[32];             // 唤醒词
     char voice_server_url[CFG_URL_MAX];   // 小智服务端 WebSocket 地址
     char voice_token[CFG_STR_MAX];        // 设备鉴权（写入脱敏）
     char voice_device_id[64];             // 设备 ID / 激活码
-    uint8_t voice_volume;                 // 0..100
+    uint8_t voice_volume;                 // 0..100，智能语音音量：小智 TTS 与提醒铃声共用
+    /* 普通操作音量：按键音、开关机音、RaceBox 状态音等系统提示音的基准，默认 60 */
+    uint8_t system_volume;                // 0..100
     uint8_t voice_wake_threshold;         // 40..99，越高越不易误唤醒
     uint8_t voice_listen_mode;            // 0=唤醒词 1=长按 2=两者
+    /* 夜间免打扰：该时段内不监听唤醒词、不预热/重连服务端连接。
+     * 两个值相等表示不启用（默认 23 与 7 表示 23:00–07:00 静默）。 */
+    uint8_t voice_quiet_hh_start;         // 免打扰起始小时 0..23
+    uint8_t voice_quiet_hh_end;           // 免打扰结束小时 0..23
     uint8_t voice_aec_level;              // 回声消除强度 0..3
     uint8_t voice_reply_seconds;          // 单次对话最长时长
     bool voice_tts_scroll;                // 回答文字在底部滚动显示

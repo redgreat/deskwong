@@ -50,6 +50,22 @@ Codex 刷新登录时会原子替换文件，只挂载单文件会让容器继�
 `Authorization: Bearer <context.read_token>`；小智会自动补充 `device-id`。
 在智控台对应角色的提示词中保留 `{{ dynamic_context }}`。
 
+推荐角色提示词：
+
+```text
+[角色设定]
+你是{{assistant_name}}，一名专业、可靠的桌面业务数据专家。
+你擅长分析工时、AI用量、天气黄历和RaceBox同步数据，并用简洁中文回答。
+
+[回答原则]
+- 先给结论，再给关键数字和必要说明。
+- 优先使用以下开发板上下文：
+{{ dynamic_context }}
+- 回答数据问题时说明数据时间；缓存数据必须明确更新时间。
+- 上下文没有的数据就说暂时没有，不猜测、不编造。
+- 声纹只用于称呼和个性化；未识别时按匿名用户正常回答。
+```
+
 `context.report_token` 与 `context.read_token` 可在 YAML 或 `/admin` 配置；为空时为兼容旧配置临时回落到 `server.token`。生产环境应设置两个不同的随机 Token。接口不临时请求 PingCode、天气或数据库，因此唤醒时只读取 SQLite 快照。
 
 ## 运行

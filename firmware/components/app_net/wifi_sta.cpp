@@ -39,9 +39,15 @@ static void event_handler(void *arg, esp_event_base_t base, int32_t id, void *da
             ESP_LOGW(TAG, "STA disconnected, reason=%d (%s), retry in 30s (setup AP active)",
                      d->reason, wifi_reason_str(d->reason));
             if (s_retry_timer == NULL) {
+                /* 剩余字段（arg / dispatch_method / skip_unhandled_events）必须保持
+                 * 默认 0，用指定初始化器会触发 -Wmissing-field-initializers，这里
+                 * 显式写全以免每次编译刷屏。 */
                 const esp_timer_create_args_t targs = {
                     .callback = retry_timer_cb,
+                    .arg = NULL,
+                    .dispatch_method = ESP_TIMER_TASK,
                     .name = "wifi_retry",
+                    .skip_unhandled_events = false,
                 };
                 if (esp_timer_create(&targs, &s_retry_timer) != ESP_OK) return;
             }
@@ -80,10 +86,11 @@ static void fill_ap_conf(wifi_config_t *ap_conf) {
 }
 
 static void set_ap_ip_info(void) {
-    esp_netif_ip_info_t ip = {0};
-    ip.ip.addr = 0x0104A8C0; // 192.168.4.1
-    ip.netmask.addr = 0x00FFFFFF;
-    ip.gw.addr = 0x0104A8C0;
+    esp_netif_ip_info_t ip = {
+        .ip = { .addr = 0x0104A8C0 },      // 192.168.4.1
+        .netmask = { .addr = 0x00FFFFFF }, // 255.255.255.0
+        .gw = { .addr = 0x0104A8C0 },      // 192.168.4.1
+    };
     esp_netif_t *ap = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
     if (ap) esp_netif_set_ip_info(ap, &ip);
 }
@@ -124,7 +131,11 @@ esp_err_t wifi_init_ex(const char *ssid, const char *pass, bool with_ap) {
     ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL, NULL));
     ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &event_handler, NULL, NULL));
 
-    wifi_config_t sta_conf = {0};
+    /* wifi_config_t 是 sta/ap 共用体，`= {0}` 只覆盖首个分支，编译器会对另一个
+     * 分支的字段刷一屏 -Wmissing-field-initializers。显式整块清零与 fill_ap_conf
+     * 保持一致，语义相同但不再产生噪音。 */
+    wifi_config_t sta_conf;
+    memset(&sta_conf, 0, sizeof(sta_conf));
     strncpy((char *)sta_conf.sta.ssid, ssid, sizeof(sta_conf.sta.ssid) - 1);
     strncpy((char *)sta_conf.sta.password, pass, sizeof(sta_conf.sta.password) - 1);
     sta_conf.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;

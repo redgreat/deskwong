@@ -101,3 +101,6 @@ log/
 
 # 本地热点配置（含 WiFi 密码，不入仓）
 tools/hotspot.local.ps1
+
+.workbuddy/
+.zcode/

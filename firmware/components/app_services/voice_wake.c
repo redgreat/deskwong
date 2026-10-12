@@ -32,10 +32,19 @@
 #include "esp_netif.h"
 #include "app_config.h"
 #include "audio_service.h"
+#include "time_service.h"
 #include "voice_service.h"
 #include "voice_wake.h"
 
 static const char *TAG = "voice_wake";
+
+/* 帧级能量门限：一帧（约 32ms）左声道 RMS 低于该值时直接跳过模型推理。
+ * 真实唤醒词即使隔两三米说话，RMS 也在 800 以上；200 只会挡掉接近静音的
+ * 帧，却能消掉夜间底噪（风扇、空调、雨声）在低阈值下偶发命中的一大半。 */
+#define WAKE_MIN_FRAME_RMS   200.0
+/* 两次触发之间的最小间隔。3s 太短：一次误命中后环境噪声往往还在，
+ * 立刻就能再命中一次，表现为"连着响好几轮"。 */
+#define WAKE_COOLDOWN_US     (10 * 1000000LL)
 
 typedef struct {
     bool inited;
@@ -55,6 +64,9 @@ typedef struct {
     int64_t last_trigger_us;
     uint32_t candidate_hits;
     uint32_t cooldown_drops;
+    uint32_t quiet_frames;     /* 被能量门限挡下、未做推理的帧数 */
+    bool quiet_logged;         /* 免打扰进入/退出日志只打一次 */
+    int applied_threshold_percent;
 
     TaskHandle_t task;
 } voice_wake_ctx_t;
@@ -70,12 +82,35 @@ static bool sta_up(void)
     return sta && esp_netif_is_netif_up(sta);
 }
 
+/* 当前是否处于夜间免打扰时段。长按/网页手动启动不受此限制，
+ * 只掐掉"自己听自己"的唤醒词通道。 */
+static bool in_quiet_hours(void)
+{
+    return voice_service_in_quiet_hours();
+}
+
+/* 把判断依据一起打出来：出问题时能立刻分清是"时段没配对"还是"RTC 时间不对"，
+ * 这两种在日志上表现一样（都是不静默），但改法完全不同。 */
+static void log_quiet_decision(const char *where)
+{
+    if (!s.cfg) return;
+    datetime_t now;
+    time_service_now(&now);
+    bool quiet = in_quiet_hours();
+    ESP_LOGI(TAG, "%s：现在 %02d:%02d，免打扰区间 %02u:00-%02u:00 → %s",
+             where, now.hour, now.minute,
+             (unsigned)s.cfg->voice_quiet_hh_start,
+             (unsigned)s.cfg->voice_quiet_hh_end,
+             quiet ? "静默中" : "正常监听");
+}
+
 static bool can_listen(void)
 {
     if (!s.inited || !s.cfg || s.suspended) return false;
     if (!s.cfg->voice_enabled) return false;
     /* 0=唤醒词 1=长按 2=两者 */
     if (s.cfg->voice_listen_mode != 0 && s.cfg->voice_listen_mode != 2) return false;
+    if (in_quiet_hours()) return false;
     if (!sta_up()) return false;
     if (voice_service_state() != VOICE_IDLE) return false;
     return true;
@@ -98,12 +133,36 @@ static void wake_task(void *arg)
     int peak = 0;
     int max_detect_us = 0;
     for (;;) {
+        int configured_threshold = (s.cfg && s.cfg->voice_wake_threshold >= 40 &&
+                                    s.cfg->voice_wake_threshold <= 99)
+                                       ? s.cfg->voice_wake_threshold : 95;
+        if (configured_threshold != s.applied_threshold_percent) {
+            int threshold_rc = s.wn->set_det_threshold(s.wn_data,
+                                                       configured_threshold / 100.0f, 1);
+            float actual_threshold = s.wn->get_det_threshold(s.wn_data, 1);
+            if (threshold_rc == 1) s.applied_threshold_percent = configured_threshold;
+            ESP_LOGI(TAG, "wake threshold update configured=%d actual=%.2f set_rc=%d",
+                     configured_threshold, actual_threshold, threshold_rc);
+        }
         if (!can_listen()) {
             s.in_read = false;
             s.park_gen++;
+            /* 免打扰期间监听任务同样在空转，必须打点，否则从日志上看起来
+             * 像"设备不说话了"，排查时容易误判成任务挂死。 */
+            bool q = in_quiet_hours() && s.cfg && s.cfg->voice_enabled;
+            if (q != s.quiet_logged) {
+                s.quiet_logged = q;
+                /* 注意：ESP_LOGI 是宏，参数里不能直接塞三目运算符 */
+                if (q) {
+                    ESP_LOGI(TAG, "进入免打扰时段：暂停唤醒词监听（长按/网页仍可唤醒）");
+                } else {
+                    ESP_LOGI(TAG, "退出免打扰时段：恢复唤醒词监听");
+                }
+            }
             vTaskDelay(pdMS_TO_TICKS(200));
             continue;
         }
+        s.quiet_logged = false;
         s.in_read = true;
         int rc = esp_codec_dev_read(rec, (uint8_t *)s.stereo_buf,
                                     (uint32_t)(s.chunk * 2 * sizeof(int16_t)));
@@ -115,28 +174,40 @@ static void wake_task(void *arg)
         if (!can_listen()) continue;   /* 读完后门控可能已变化（如会话启动） */
 
         /* 16k/2ch 取左声道（单麦克风）给 wakenet */
+        int64_t frame_sq = 0;
         for (int i = 0; i < s.chunk; i++) {
             int v = s.stereo_buf[i * 2];
             int a = v < 0 ? -v : v;
             s.mono_buf[i] = (int16_t)v;
             sum_sq += (int64_t)v * v;
+            frame_sq += (int64_t)v * v;
             if (a > peak) peak = a;
         }
-        int64_t detect_begin_us = esp_timer_get_time();
-        int r = s.wn->detect(s.wn_data, s.mono_buf);
-        int detect_us = (int)(esp_timer_get_time() - detect_begin_us);
-        if (detect_us > max_detect_us) max_detect_us = detect_us;
+        /* 能量门限：近静音帧不送模型，省 CPU 也挡掉底噪偶发命中 */
+        double frame_rms = sqrt((double)frame_sq / (double)s.chunk);
+        int r = 0;
+        int detect_us = 0;
+        if (frame_rms < WAKE_MIN_FRAME_RMS) {
+            s.quiet_frames++;
+            s.armed = true;   /* 未命中语义：允许后续有声帧触发 */
+        } else {
+            int64_t detect_begin_us = esp_timer_get_time();
+            r = s.wn->detect(s.wn_data, s.mono_buf);
+            detect_us = (int)(esp_timer_get_time() - detect_begin_us);
+            if (detect_us > max_detect_us) max_detect_us = detect_us;
+        }
         frames++;
         int64_t now_us = esp_timer_get_time();
         if (now_us - last_diag_us >= 10000000) {
             double rms = frames ? sqrt((double)sum_sq / ((double)frames * s.chunk)) : 0.0;
-            ESP_LOGI(TAG, "health frames=%u rms=%.1f peak=%d detect_max=%dus stack_free=%u core=%d",
-                     (unsigned)frames, rms, peak, max_detect_us,
-                     (unsigned)uxTaskGetStackHighWaterMark(NULL), xPortGetCoreID());
+            ESP_LOGI(TAG, "health frames=%u rms=%.1f peak=%d quiet=%u detect_max=%dus stack_free=%u core=%d",
+                     (unsigned)frames, rms, peak, (unsigned)s.quiet_frames,
+                     max_detect_us, (unsigned)uxTaskGetStackHighWaterMark(NULL), xPortGetCoreID());
             frames = 0;
             sum_sq = 0;
             peak = 0;
             max_detect_us = 0;
+            s.quiet_frames = 0;
             last_diag_us = now_us;
         }
         if (r <= 0) {
@@ -149,10 +220,11 @@ static void wake_task(void *arg)
          * 防重触发交给 armed 标志。 */
         s.candidate_hits++;
         if (!s.armed) continue;
-        if (s.last_trigger_us > 0 && now_us - s.last_trigger_us < 3000000) {
+        if (s.last_trigger_us > 0 && now_us - s.last_trigger_us < WAKE_COOLDOWN_US) {
             s.cooldown_drops++;
-            ESP_LOGW(TAG, "wake candidate ignored by 3s cooldown candidates=%u drops=%u",
-                     (unsigned)s.candidate_hits, (unsigned)s.cooldown_drops);
+            ESP_LOGW(TAG, "wake candidate ignored by %llds cooldown candidates=%u drops=%u",
+                     (long long)(WAKE_COOLDOWN_US / 1000000), (unsigned)s.candidate_hits,
+                     (unsigned)s.cooldown_drops);
             continue;
         }
         s.last_trigger_us = now_us;
@@ -211,10 +283,15 @@ void voice_wake_init(const app_config_t *cfg)
                                 ? cfg->voice_wake_threshold : 95;
     int threshold_rc = s.wn->set_det_threshold(s.wn_data, threshold_percent / 100.0f, 1);
     float actual_threshold = s.wn->get_det_threshold(s.wn_data, 1);
+    if (threshold_rc == 1) s.applied_threshold_percent = threshold_percent;
     s.chunk = s.wn->get_samp_chunksize(s.wn_data);
-    ESP_LOGI(TAG, "唤醒模型：%s chunk=%d 采样（%dms） rate=%d threshold=%.2f set_rc=%d cooldown=3000ms", wn_name,
-             s.chunk, s.chunk * 1000 / s.wn->get_samp_rate(s.wn_data),
-             s.wn->get_samp_rate(s.wn_data), actual_threshold, threshold_rc);
+    ESP_LOGI(TAG, "唤醒模型：%s chunk=%d 采样（%dms） rate=%d threshold=%.2f set_rc=%d cooldown=%llds",
+             wn_name, s.chunk, s.chunk * 1000 / s.wn->get_samp_rate(s.wn_data),
+             s.wn->get_samp_rate(s.wn_data), actual_threshold, threshold_rc,
+             (long long)(WAKE_COOLDOWN_US / 1000000));
+    ESP_LOGI(TAG, "监听策略：能量门限 RMS>=%.0f，免打扰 %02u:00-%02u:00（相等=关闭）",
+             WAKE_MIN_FRAME_RMS, (unsigned)(cfg ? cfg->voice_quiet_hh_start : 0),
+             (unsigned)(cfg ? cfg->voice_quiet_hh_end : 0));
 
     s.stereo_buf = (int16_t *)heap_caps_malloc(s.chunk * 2 * sizeof(int16_t),
                                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -246,6 +323,7 @@ void voice_wake_init(const app_config_t *cfg)
         ESP_LOGE(TAG, "唤醒任务创建失败");
         return;
     }
+    log_quiet_decision("唤醒监听启动检查");
 }
 
 bool voice_wake_suspend(int timeout_ms)

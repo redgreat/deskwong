@@ -187,6 +187,10 @@ static int _i2s_init(uint8_t port, esp_codec_dev_type_t dev_type, codec_init_cfg
         },
     };
     tdm_cfg.slot_cfg.total_slot = 4;
+    /* TDM 下 bclk = 16000 x 32bit x 4slot = 2.048MHz，默认 256 倍 mclk 只有
+     * 4.096MHz（mclk/bclk 仅 2 倍），驱动每次初始化都会强制抬到 384 并打一条
+     * "mclk multiple is too small" 告警。这里显式设成实际生效值，消除启动噪音。 */
+    tdm_cfg.clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_384;
 #endif
     chan_cfg.id = I2S_NUM_AUTO; // Use auto ID
     int ret = i2s_new_channel(&chan_cfg, output == false ? NULL : &i2s_keep[port]->tx_handle,

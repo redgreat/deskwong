@@ -62,6 +62,12 @@ float worktime_expected_hours(int year, int month) {
     return workdays * WT_DAILY_HOURS;
 }
 
+float worktime_expected_hours_elapsed(int year, int month, int today_day) {
+    int workdays = holiday_workdays_upto(year, month, today_day);
+    if (workdays <= 0) return 0;
+    return workdays * WT_DAILY_HOURS;
+}
+
 static void cache_write(const worktime_summary_t *s) {
     if (s->year < 2001 || s->month < 1 || s->month > 12) return;
     worktime_cache_blob_t blob;

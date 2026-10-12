@@ -86,6 +86,13 @@ void time_service_now(datetime_t *dt) {
     dt->weekday = calendar_weekday(t.year, t.month, t.day);
 }
 
+bool time_service_in_hour_range(uint8_t start_hh, uint8_t end_hh) {
+    rtcTimeStruct_t t;
+    Rtc_GetTime(&t);
+    if (!datetime_valid(t.year, t.month, t.day, t.hour, t.minute, t.second)) return false;
+    return time_util_hour_in_range(t.hour, start_hh, end_hh);
+}
+
 void time_service_set(const datetime_t *dt) {
     Rtc_SetTime((uint16_t)dt->year, (uint8_t)dt->month, (uint8_t)dt->day,
                 (uint8_t)dt->hour, (uint8_t)dt->minute, (uint8_t)dt->second);
@@ -156,8 +163,12 @@ void time_service_sync_ntp(void) {
     static bool started = false;
     if (started) return;
     started = true;
-    /* pool.ntp.org 在国内网络经常超时，默认用阿里云 NTP */
-    esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("ntp.aliyun.com");
+    /* pool.ntp.org 在国内网络经常超时，用国内三家互为备份：阿里云（主，响应最快）、
+     * 国家授时中心、腾讯云。只配一台时，它偶发不可达会让设备等满一个刷新周期
+     * （默认 1 小时）才重试，系统时间会长时间停在错误值上。
+     * 槽位数必须 <= CONFIG_LWIP_SNTP_MAX_SERVERS（sdkconfig.defaults 里设为 3）。 */
+    esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG_MULTIPLE(
+        3, ESP_SNTP_SERVER_LIST("ntp.aliyun.com", "ntp.ntsc.ac.cn", "time.tencent.com"));
     ESP_ERROR_CHECK(esp_netif_sntp_init(&cfg));
     xTaskCreate(ntp_sync_task, "ntp_sync", 4096, NULL, 3, NULL);
 }

@@ -40,7 +40,8 @@ void main_screen_update_summary(float recorded, float expected, const char *weat
 void main_screen_show_remind(const char *msg);
 void main_screen_hide_remind(void);
 bool main_screen_remind_visible(void);
-void main_screen_set_reminder_enabled(bool enabled);
+/* 语音关闭时隐藏；启用后以普通/异常图标区分 WSS hello 是否完成。 */
+void main_screen_set_voice_connection(bool enabled, bool connected);
 
 #ifdef __cplusplus
 }

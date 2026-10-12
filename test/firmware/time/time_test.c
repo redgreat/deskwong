@@ -68,6 +68,33 @@ int main(void) {
         printf("ok   epoch monotonic\n");
     }
 
+    /* 免打扰时段判断：跨午夜是重点，配错会把设备整晚静音或整晚不静音 */
+    struct { int hour; uint8_t s, e; bool want; const char *name; } ranges[] = {
+        { 23, 23, 7, true,  "quiet 23:00 boundary start" },
+        {  3, 23, 7, true,  "quiet 03:00 inside overnight" },
+        {  6, 23, 7, true,  "quiet 06:59 inside overnight" },
+        {  7, 23, 7, false, "quiet 07:00 boundary end (exclusive)" },
+        { 12, 23, 7, false, "quiet noon outside overnight" },
+        { 22, 23, 7, false, "quiet 22:00 before start" },
+        { 14,  9, 18, true,  "quiet 14:00 inside same-day" },
+        {  9,  9, 18, true,  "quiet 09:00 same-day start" },
+        { 18,  9, 18, false, "quiet 18:00 same-day end exclusive" },
+        {  8,  9, 18, false, "quiet 08:00 same-day before" },
+        { 12,  0,  0, false, "quiet disabled when start==end" },
+        { 12,  0, 23, true,  "quiet full day 00-23 start" },
+        { 12, 99,  7, false, "quiet invalid start rejected" },
+        { 12,  0, 99, false, "quiet invalid end rejected" },
+    };
+    for (size_t i = 0; i < sizeof(ranges) / sizeof(ranges[0]); i++) {
+        bool got = time_util_hour_in_range(ranges[i].hour, ranges[i].s, ranges[i].e);
+        if (got != ranges[i].want) {
+            printf("FAIL %s: got %d want %d\n", ranges[i].name, got, ranges[i].want);
+            failures++;
+        } else {
+            printf("ok   %s\n", ranges[i].name);
+        }
+    }
+
     if (failures) {
         printf("%d failure(s)\n", failures);
         return 1;

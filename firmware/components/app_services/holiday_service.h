@@ -24,6 +24,10 @@ bool holiday_is_weekend(int year, int month, int day);
  * 表外年份按自然周末判断，返回 0 表示年月非法。 */
 int holiday_workdays(int year, int month);
 
+/* 某月 1 日到 day（含）之间的法定工作日天数，day 超过当月天数时按月末截断。
+ * 主屏“本月已过应记录工时”用它把分母折算到当前已过天数。 */
+int holiday_workdays_upto(int year, int month, int day);
+
 #ifdef __cplusplus
 }
 #endif

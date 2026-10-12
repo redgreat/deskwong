@@ -41,6 +41,7 @@
 
 #include "app_config.h"
 #include "audio_service.h"
+#include "time_service.h"
 #include "voice_service.h"
 #include "voice_wake.h"
 
@@ -100,12 +101,17 @@ typedef struct {
 
     char last_err[160];
     volatile bool stopping;
+    volatile bool transport_ready;
     volatile bool followup_waiting;
     uint32_t turn_id;
     int64_t turn_started_us;
     volatile bool first_uplink_logged;
     volatile bool first_audio_logged;
     volatile bool playback_logged;
+    /* 诊断用：服务端每收到一次 hello 就会记一条会话，重连频率直接决定
+     * 服务端会话条数，这里把断开时间与 hello 次数记下来以便定位。 */
+    volatile int64_t last_disconnect_us;
+    uint32_t hello_count;
 } voice_ctx_t;
 
 static voice_ctx_t s;
@@ -538,7 +544,15 @@ static void handle_json(const char *txt, int len)
             if (!s.dec || err != OPUS_OK) set_error("Opus 解码器创建失败 rate=%d err=%d", rate, err);
             xSemaphoreGive(s.audio_mutex);
         }
-        ESP_LOGI(TAG, "握手完成 session=%s 下行采样率=%d", s.session_id, s.down_rate);
+        /* 服务端把每次 hello 都当作一条新会话，这条日志是判断"半夜会话是不是
+         * 重连刷出来的"最直接依据：同一分钟内 hello 多次即连接不稳定。 */
+        s.hello_count++;
+        int64_t since_disc_s = s.last_disconnect_us > 0
+                                   ? (esp_timer_get_time() - s.last_disconnect_us) / 1000000
+                                   : -1;
+        ESP_LOGI(TAG, "握手完成 session=%s 下行采样率=%d 累计连接=%u 距上次断开=%llds",
+                 s.session_id, s.down_rate, (unsigned)s.hello_count, (long long)since_disc_s);
+        s.transport_ready = true;
         if (s.events) xEventGroupSetBits(s.events, HELLO_BIT);
     } else if (strcmp(type, "stt") == 0) {
         mark_voice_activity();
@@ -655,6 +669,9 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t event_id,
         break;
     case WEBSOCKET_EVENT_DISCONNECTED:
         ESP_LOGW(TAG, "WebSocket 断开");
+        s.last_disconnect_us = esp_timer_get_time();
+        audio_service_voice_end();
+        s.transport_ready = false;
         s.mic_run = false;
         if (!s.stopping) {
             set_error("WebSocket 连接断开");
@@ -663,12 +680,18 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t event_id,
         break;
     case WEBSOCKET_EVENT_CLOSED:
         ESP_LOGW(TAG, "WebSocket 关闭");
+        s.last_disconnect_us = esp_timer_get_time();
+        audio_service_voice_end();
+        s.transport_ready = false;
         s.mic_run = false;
         if (!s.stopping && s.state != VOICE_RECONNECTING)
             notify(VOICE_RECONNECTING, NULL, NULL);
         break;
     case WEBSOCKET_EVENT_ERROR:
         ESP_LOGE(TAG, "WebSocket 错误");
+        s.last_disconnect_us = esp_timer_get_time();
+        audio_service_voice_end();
+        s.transport_ready = false;
         s.mic_run = false;
         if (!s.stopping) {
             set_error("WebSocket 网络错误");
@@ -775,6 +798,9 @@ static BaseType_t create_mic_task(void)
 static void teardown(bool keep_error)
 {
     s.mic_run = false;
+    s.transport_ready = false;
+    /* 幂等恢复系统提示音基准，覆盖正常停止、超时、断线和初始化失败。 */
+    audio_service_voice_end();
     if (s.mic_task) {
         /* 等采集线程退出，避免它继续用已释放的编码器 */
         for (int i = 0; i < 30 && s.mic_task; i++) vTaskDelay(pdMS_TO_TICKS(100));
@@ -842,6 +868,7 @@ void voice_service_set_event_cb(voice_event_cb_t cb, void *ctx)
 static void destroy_idle_ws_locked(void)
 {
     if (!s.ws) return;
+    s.transport_ready = false;
     s.stopping = true;
     esp_websocket_client_stop(s.ws);
     esp_websocket_client_destroy(s.ws);
@@ -918,6 +945,7 @@ static void preconnect_task(void *arg)
 {
     static const uint32_t retry_seconds[] = {10, 30, 60, 300};
     size_t retry_index = 0;
+    bool quiet_logged = false;   /* 免打扰进入/退出的日志只在切换时打一次 */
     vTaskDelay(pdMS_TO_TICKS(1500));
     for (;;) {
         TickType_t now = xTaskGetTickCount();
@@ -925,9 +953,16 @@ static void preconnect_task(void *arg)
         uint32_t idle_limit_ms = s.followup_waiting ? 10000 : 30000;
         if (s.state == VOICE_LISTENING && last != 0 && !s_start_busy &&
             (now - last) >= pdMS_TO_TICKS(idle_limit_ms)) {
-            ESP_LOGW(TAG, "%s idle for %lus; closing logical conversation and resuming wake word",
-                     s.followup_waiting ? "followup" : "listening",
-                     (unsigned long)(idle_limit_ms / 1000));
+            /* followup 超时是设计内的多轮对话收尾（用户说完就没下文了），每轮对话
+             * 都会发生，用 W 级会淹掉真正的告警；listening 下的 30s watchdog 才是
+             * 异常挂起，保留 W。 */
+            if (s.followup_waiting) {
+                ESP_LOGI(TAG, "followup idle for %lus; closing logical conversation and resuming wake word",
+                         (unsigned long)(idle_limit_ms / 1000));
+            } else {
+                ESP_LOGW(TAG, "listening idle for %lus; closing logical conversation and resuming wake word",
+                         (unsigned long)(idle_limit_ms / 1000));
+            }
             timing_log(s.followup_waiting ? "followup_timeout" : "watchdog_timeout");
             voice_service_stop();
             s_last_voice_activity_tick = 0;
@@ -937,12 +972,27 @@ static void preconnect_task(void *arg)
         }
 
         uint32_t next_delay_ms = 1000;
+        bool quiet_now = voice_service_in_quiet_hours();
         if (s.cfg && s.cfg->voice_enabled && voice_net_up() &&
             (s.state == VOICE_IDLE || s.state == VOICE_RECONNECTING) && !s_start_busy) {
             lock();
             bool was_reconnecting = s.state == VOICE_RECONNECTING;
             bool ready = s.ws && esp_websocket_client_is_connected(s.ws) && s.session_id[0];
-            if (!ready) {
+            if (!ready && quiet_now) {
+                /* 夜间免打扰：既不预热也不重连——服务端把每一次 hello 都记成一条
+                 * 新会话，夜里反复重连就会在后台刷出一堆"只有开场白"的记录。
+                 * 已建立的连接保持不动（不主动断），否则白白多出一次重连。 */
+                if (!quiet_logged) {
+                    ESP_LOGI(TAG, "免打扰时段：暂停服务端预热/重连");
+                    quiet_logged = true;
+                    if (was_reconnecting) notify(VOICE_IDLE, NULL, NULL);
+                }
+                next_delay_ms = 60000;
+            } else if (!ready) {
+                if (quiet_logged) {
+                    ESP_LOGI(TAG, "免打扰时段结束：恢复服务端预热");
+                    quiet_logged = false;
+                }
                 ESP_LOGI(TAG, "background voice preconnect");
                 if (!connect_ws_locked()) {
                     uint32_t retry_s = retry_seconds[retry_index];
@@ -954,7 +1004,22 @@ static void preconnect_task(void *arg)
                     next_delay_ms = retry_s * 1000;
                     if (was_reconnecting) notify(VOICE_IDLE, NULL, NULL);
                 } else {
-                    retry_index = 0;
+                    /* 连上了但距上次断开不足 60s，说明链路/服务端仍不稳定。
+                     * 这种"连上就被断"的循环如果每次都把退避清零，就退化成
+                     * 每秒一次重连，服务端那边表现为会话记录被疯狂刷屏。 */
+                    int64_t since_disc_s = s.last_disconnect_us > 0
+                                               ? (esp_timer_get_time() - s.last_disconnect_us) / 1000000
+                                               : -1;
+                    if (since_disc_s >= 0 && since_disc_s < 60) {
+                        uint32_t retry_s = retry_seconds[retry_index];
+                        if (retry_index + 1 < sizeof(retry_seconds) / sizeof(retry_seconds[0]))
+                            retry_index++;
+                        ESP_LOGW(TAG, "链路不稳定（%llds 前刚断开），重连退避 %lus",
+                                 (long long)since_disc_s, (unsigned long)retry_s);
+                        next_delay_ms = retry_s * 1000;
+                    } else {
+                        retry_index = 0;
+                    }
                     s.last_err[0] = 0;
                     if (was_reconnecting) notify(VOICE_IDLE, NULL, NULL);
                 }
@@ -985,8 +1050,6 @@ static bool voice_start_internal(bool from_wake)
     lock();
     s.last_err[0] = 0;
 
-    if (s.cfg) audio_service_set_volume(100);   /* 用户要求临时拉满（TTS 偏轻），调好后再接回 cfg->voice_volume */
-
     if (!connect_ws_locked()) {
         char err_copy[sizeof(s.last_err)];
         snprintf(err_copy, sizeof(err_copy), "%s", s.last_err[0] ? s.last_err : "连接失败");
@@ -1009,6 +1072,7 @@ static bool voice_start_internal(bool from_wake)
     opus_encoder_ctl(s.enc, OPUS_SET_BITRATE(24000));
     /* 降复杂度，显著减少编码栈占用与 CPU 开销，对语音识别足够 */
     opus_encoder_ctl(s.enc, OPUS_SET_COMPLEXITY(0));
+    audio_service_voice_begin(s.cfg ? s.cfg->voice_volume : 60);
 
     /* 唤醒触发时先上报 detect，再明确告知服务端开始听 */
     if (from_wake) send_listen_detect();
@@ -1094,6 +1158,13 @@ void voice_service_stop(void)
     ESP_LOGI(TAG, "语音会话已结束");
 }
 
+bool voice_service_in_quiet_hours(void)
+{
+    if (!s.cfg) return false;
+    return time_service_in_hour_range(s.cfg->voice_quiet_hh_start,
+                                      s.cfg->voice_quiet_hh_end);
+}
+
 voice_state_t voice_service_state(void)
 {
     return s.state;
@@ -1107,4 +1178,9 @@ const char *voice_service_last_error(void)
 const char *voice_service_device_id(void)
 {
     return s.device_id;
+}
+
+bool voice_service_transport_ready(void)
+{
+    return s.transport_ready;
 }

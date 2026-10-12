@@ -76,11 +76,17 @@ bool holiday_is_workday(int year, int month, int day) {
 }
 
 int holiday_workdays(int year, int month) {
+    return holiday_workdays_upto(year, month, 31);
+}
+
+int holiday_workdays_upto(int year, int month, int day) {
     if (year < 2001 || month < 1 || month > 12) return 0;
     int days = calendar_month_days(year, month);
     if (days < 28 || days > 31) return 0;
+    if (day > days) day = days;   /* 当月没有这一天时按月末截断 */
+    if (day < 1) return 0;
     int workdays = 0;
-    for (int d = 1; d <= days; d++) {
+    for (int d = 1; d <= day; d++) {
         if (holiday_is_workday(year, month, d)) workdays++;
     }
     return workdays;

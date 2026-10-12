@@ -47,7 +47,6 @@ static voice_state_t g_voice_ui_state = VOICE_IDLE;
 static char g_voice_ui_status[20] = "";
 static char g_voice_ui_question[160] = "...";
 static char g_voice_ui_answer[256] = "...";
-static TickType_t g_voice_ui_error_until = 0;
 
 static void on_voice_event(const voice_event_t *ev, void *ctx) {
     (void)ctx;
@@ -69,9 +68,6 @@ static void on_voice_event(const voice_event_t *ev, void *ctx) {
         const char *err = voice_service_last_error();
         if (err && err[0]) {
             snprintf(g_voice_ui_status, sizeof(g_voice_ui_status), "服务不可用");
-            g_voice_ui_error_until = xTaskGetTickCount() + pdMS_TO_TICKS(5000);
-        } else {
-            g_voice_ui_error_until = 0;
         }
     }
     g_voice_ui_seq++;
@@ -154,18 +150,43 @@ static const char *week_cn(int wd) {
     return n[wd];
 }
 
+/* 主屏“应记录”口径：当前月按已过法定工作日 ×8 小时折算（分母也随天数走，
+ * REQUIREMENTS §5），翻页浏览历史月份时用整月应收工时。 */
+static float display_expected_hours(const worktime_summary_t *wt, const datetime_t *now) {
+    if (wt->year == now->year && wt->month == now->month)
+        return worktime_expected_hours_elapsed(wt->year, wt->month, now->day);
+    return wt->expected_hours;
+}
+
+/* 提醒条停留：企微签到/签退与工时记录分别配置，未按 KEY 时到时就自动隐藏。
+ * 计时由 UI 任务自己维护（on_remind 也跑在 UI 任务里），无需额外互斥。 */
+static volatile TickType_t g_remind_shown_tick = 0;
+static volatile uint32_t g_remind_hold_ms = 300000;
+
+static uint32_t remind_hold_ms(remind_type_t type) {
+    uint16_t sec = type == REMIND_WORKTIME ? g_cfg.remind_worktime_hold_seconds
+                                           : g_cfg.remind_sign_hold_seconds;
+    if (sec < 5) sec = 5;
+    if (sec > 3600) sec = 3600;
+    return (uint32_t)sec * 1000U;
+}
+
 static void on_remind(remind_type_t type) {
     const char *msg = NULL;
-    if (type == REMIND_SIGNIN) msg = "准备企微签到";
-    else if (type == REMIND_SIGNOUT) msg = "准备企微签退";
-    else if (type == REMIND_WORKTIME) msg = "记得记录今日工时";
+    audio_cue_t cue = AUDIO_CUE_KEY;
+    if (type == REMIND_SIGNIN) { msg = "准备企微签到"; cue = AUDIO_CUE_SIGNIN; }
+    else if (type == REMIND_SIGNOUT) { msg = "准备企微签退"; cue = AUDIO_CUE_SIGNOUT; }
+    else if (type == REMIND_WORKTIME) { msg = "记得记录今日工时"; cue = AUDIO_CUE_WORKTIME; }
     if (msg) {
+        g_remind_hold_ms = remind_hold_ms(type);
+        g_remind_shown_tick = xTaskGetTickCount();
         if (Lvgl_lock(100)) {
             main_screen_show_remind(msg);
             Lvgl_unlock();
         }
-        audio_service_beep();
-        ESP_LOGI(TAG, "remind: %s", msg);
+        audio_service_cue(cue);
+        ESP_LOGI(TAG, "remind: %s (ring volume=%u, hold %lums)",
+                 msg, (unsigned)g_cfg.voice_volume, (unsigned long)g_remind_hold_ms);
     }
 }
 
@@ -254,6 +275,8 @@ static void job_voice_context(void *ctx) {
     snap.month = now.month;
     snap.day = now.day;
     snap.worktime = g_worktime;
+    /* 语音播报与主屏同口径：本月已记录/已过工作日的应记录 */
+    snap.worktime.expected_hours = display_expected_hours(&g_worktime, &now);
     snap.ai = g_ai;
     snap.ai_count = g_ai_count;
     snap.weather = g_weather;
@@ -308,22 +331,20 @@ static void ui_update_task(void *arg) {
 
         uint32_t voice_seq;
         voice_state_t voice_state;
-        TickType_t voice_error_until;
         char voice_status[20], voice_q[160], voice_a[256];
         taskENTER_CRITICAL(&g_voice_ui_mux);
         voice_seq = g_voice_ui_seq;
         voice_state = g_voice_ui_state;
-        voice_error_until = g_voice_ui_error_until;
         snprintf(voice_status, sizeof(voice_status), "%s", g_voice_ui_status);
         snprintf(voice_q, sizeof(voice_q), "%s", g_voice_ui_question);
         snprintf(voice_a, sizeof(voice_a), "%s", g_voice_ui_answer);
         taskEXIT_CRITICAL(&g_voice_ui_mux);
-        bool error_hold = voice_state == VOICE_IDLE && voice_error_until != 0 &&
-                          xTaskGetTickCount() < voice_error_until;
-        bool error_expired = voice_state == VOICE_IDLE && voice_error_until != 0 && !error_hold;
-        if (voice_seq != voice_ui_applied_seq || error_expired) {
+        if (voice_seq != voice_ui_applied_seq) {
             if (Lvgl_lock(50)) {
-                if (voice_state != VOICE_IDLE || error_hold) {
+                bool active_dialog = voice_state == VOICE_CONNECTING ||
+                                     voice_state == VOICE_LISTENING ||
+                                     voice_state == VOICE_SPEAKING;
+                if (active_dialog) {
                     if (!voice_screen_visible()) voice_screen_show();
                     voice_screen_set_status(voice_status);
                     voice_screen_set_question(voice_q);
@@ -333,11 +354,6 @@ static void ui_update_task(void *arg) {
                 }
                 Lvgl_unlock();
                 voice_ui_applied_seq = voice_seq;
-                if (error_expired) {
-                    taskENTER_CRITICAL(&g_voice_ui_mux);
-                    if (g_voice_ui_error_until == voice_error_until) g_voice_ui_error_until = 0;
-                    taskEXIT_CRITICAL(&g_voice_ui_mux);
-                }
             }
         }
 
@@ -405,6 +421,18 @@ static void ui_update_task(void *arg) {
             audio_service_cue(AUDIO_CUE_CANCEL);
         }
 
+        /* 企微签到/签退与工时记录提醒条：到达后台配置的停留时长后自动消失，
+         * 不用一直挡在主屏底部；期间 KEY 短按仍可立即关闭。 */
+        if (g_remind_shown_tick && main_screen_remind_visible() &&
+            xTaskGetTickCount() - g_remind_shown_tick > pdMS_TO_TICKS(g_remind_hold_ms)) {
+            g_remind_shown_tick = 0;
+            if (Lvgl_lock(100)) {
+                main_screen_hide_remind();
+                Lvgl_unlock();
+            }
+            ESP_LOGI(TAG, "remind banner auto dismissed");
+        }
+
         if (g_calendar_mode && xTaskGetTickCount() - g_calendar_last_action >
                 pdMS_TO_TICKS((uint32_t)g_cfg.calendar_return_seconds * 1000U)) {
             g_calendar_mode = false;
@@ -463,7 +491,8 @@ static void ui_update_task(void *arg) {
                 main_screen_update_time(NULL, time_str, NULL, NULL);
                 main_screen_update_status(status);
                 main_screen_update_net(wifi_is_connected(), ip);
-                main_screen_set_reminder_enabled(g_cfg.remind_enabled);
+                main_screen_set_voice_connection(g_cfg.voice_enabled,
+                                                 voice_service_transport_ready());
                 Lvgl_unlock();
             }
         }
@@ -514,7 +543,8 @@ static void ui_update_task(void *arg) {
                     if (g_ai[i].window_minutes == 300) ai5h = &g_ai[i];
                     if (g_ai[i].window_minutes == 10080) aiweek = &g_ai[i];
                 }
-                main_screen_update_summary(g_worktime.recorded_hours, g_worktime.expected_hours,
+                main_screen_update_summary(g_worktime.recorded_hours,
+                    display_expected_hours(&g_worktime, &dt),
                     weather, g_weather.text[0] ? g_weather.icon : 0, lunar_full, ai5h, aiweek,
                     racebox_service_synced_today(), racebox_service_point_count(), g_temp, g_humi);
                 main_screen_update_calendar(cells);
@@ -684,6 +714,9 @@ extern "C" void app_main(void) {
     racebox_service_init(g_cfg.racebox_upload_topic, g_cfg.racebox_auto_erase,
                          g_cfg.racebox_device_name, g_cfg.racebox_device_lock);
     audio_service_init();
+    /* 两个音量都跟随后台配置；之后网页保存会再次热更新 */
+    audio_service_set_system_volume(g_cfg.system_volume);
+    audio_service_set_ring_volume(g_cfg.voice_volume);
     /* 语音（小智）只初始化，不在这里联网：此时 WiFi 还没起来。
      * 对话由唤醒词、BOOT 短按或 POST /api/voice/start 触发。 */
     voice_service_init(&g_cfg);

@@ -25,6 +25,19 @@ int main(void) {
     assert(holiday_workdays(0, 0) == 0);
     assert(holiday_workdays(2026, 13) == 0);
 
+    /* 已过工作日：主屏“应记录”按本月 1 日到当天（含）折算，需求口径为工作日 ×8 小时 */
+    assert(holiday_workdays_upto(2026, 10, 12) == 4);   /* 10/8、10/9、10/10 调休、10/12 */
+    assert(holiday_workdays_upto(2026, 10, 31) == 18);  /* 到月末等于整月 */
+    assert(holiday_workdays_upto(2026, 10, 40) == 18);  /* 超过月末按月末截断 */
+    assert(holiday_workdays_upto(2026, 10, 7) == 0);    /* 国庆 10/1-10/7 全假，尚无可计工作日 */
+    assert(holiday_workdays_upto(2026, 3, 10) == 7);    /* 10 号已过 7 个工作日 → 7×8=56 */
+    assert(holiday_workdays_upto(2026, 2, 14) == 11);   /* 2/14 调休计入 */
+    /* 边界：当天之前没有工作日、非法输入都返回 0 */
+    assert(holiday_workdays_upto(2026, 10, 0) == 0);
+    assert(holiday_workdays_upto(2026, 10, -3) == 0);
+    assert(holiday_workdays_upto(0, 0, 10) == 0);
+    assert(holiday_workdays_upto(2026, 13, 10) == 0);
+
     puts("holiday workday table passed");
     return 0;
 }

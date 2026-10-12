@@ -18,6 +18,10 @@ void worktime_service_init(const char *base, const char *token);
 int worktime_service_fetch(int year, int month, worktime_summary_t *out);
 /* 某月应收工时：法定工作日 × 每日标准工时（服务端未返回时兜底），无记录也为正数 */
 float worktime_expected_hours(int year, int month);
+/* 本月已过天数的应收工时：1 日到 today_day（含）的法定工作日 × 每日标准工时。
+ * 主屏“应记录”与百分比分母按这个口径显示（REQUIREMENTS §5），
+ * 翻页浏览其他月份时才退回整月口径。 */
+float worktime_expected_hours_elapsed(int year, int month, int today_day);
 /* 载入 NVS 中上次成功的月度汇总；无缓存时返回 0 记录 + 本地应收工时 */
 void worktime_service_load(int year, int month, worktime_summary_t *out);
 

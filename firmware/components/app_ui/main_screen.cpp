@@ -29,10 +29,33 @@ static const uint8_t s_cal_icon_bits[] = {
     0x3F, 0xF8,  /* ..###########.. */
 };
 static lv_img_dsc_t s_cal_icon_dsc;
+/* 顶栏小智状态 15x15：天线 + 圆角机器人脸。连接与断开共用同一位图，
+ * 只切换前景/背景黑白，避免用音乐符号冒充语音助手。 */
+static const uint8_t s_voice_icon_bits[] = {
+    0x0E, 0x00, /* ....###........ */
+    0x04, 0x00, /* .....#......... */
+    0x3F, 0xF8, /* ..###########.. */
+    0x40, 0x04, /* .#...........#. */
+    0x4C, 0x64, /* .#..##...##..#. */
+    0x4C, 0x64, /* .#..##...##..#. */
+    0x40, 0x04, /* .#...........#. */
+    0x47, 0xC4, /* .#...#####...#. */
+    0x44, 0x44, /* .#...#...#...#. */
+    0x47, 0xC4, /* .#...#####...#. */
+    0x40, 0x04, /* .#...........#. */
+    0x3F, 0xF8, /* ..###########.. */
+    0x0C, 0x60, /* ....##...##.... */
+    0x1C, 0x70, /* ...###...###... */
+    0x00, 0x00, /* ............... */
+};
+static const lv_img_dsc_t s_voice_icon_dsc = {
+    .header = {.cf = LV_IMG_CF_ALPHA_1BIT, .always_zero = 0, .reserved = 0, .w = 15, .h = 15},
+    .data_size = sizeof(s_voice_icon_bits), .data = s_voice_icon_bits
+};
 /* 工时摘要：数字行（已记/应记）+ 下方细条，右侧百分比胶囊。
  * 数字用 digits_18（与日期格一致），百分比用反白圆角胶囊（与状态栏 IP 胶囊呼应）。 */
 static lv_obj_t *s_total_num, *s_total_capsule, *s_total_pct_text;
-static lv_obj_t *s_lunar_full, *s_weather, *s_temperature, *s_humidity, *s_weather_image, *s_bell, *s_ai[2], *s_remind;
+static lv_obj_t *s_lunar_full, *s_weather, *s_temperature, *s_humidity, *s_weather_image, *s_voice_conn, *s_ai[2], *s_remind;
 static lv_obj_t *s_cell[42], *s_day[42], *s_lunar[42], *s_track[42], *s_fill[42];
 static lv_obj_t *s_summary_fill, *s_ai_fill[2];
 /* 状态栏：离线时显示的后台地址胶囊、RaceBox 图标 */
@@ -210,17 +233,47 @@ static lv_obj_t *degree_mark(lv_obj_t *p, int size, int border) {
     return o;
 }
 
+/* 顶栏左簇（电量图标 + 百分比 + 网络符号 + 语音图标）：
+ * 电量文本宽度随 1%~100% 变化（"--%" 3 字符 → "100%" 4 字符，约差 8px），
+ * 语音图标不能按固定 x 定位，否则 100% 时 WiFi 符号会顶到它身上。
+ * 定位规则见 SPECIFICATIONS §5：紧跟在电量标签实际宽度右缘之后固定 6px
+ * （标签框右缘比字形墨迹右缘多 2px 左右，渲染出的墨迹间隙约 8px），
+ * 间距不随电量位数变化；再保底不越过分隔线 x=116。 */
+#define STATUS_TEXT_X        7
+#define STATUS_TEXT_Y        9
+#define STATUS_SEP_X         116
+#define STATUS_ICON_SIZE     15
+#define STATUS_ICON_GAP      6
+static void status_align_voice(void) {
+    if (!s_status || !s_voice_conn) return;
+    lv_obj_update_layout(s_status);
+    int x = STATUS_TEXT_X + (int)lv_obj_get_width(s_status) + STATUS_ICON_GAP;
+    if (x > STATUS_SEP_X - 1 - STATUS_ICON_SIZE) x = STATUS_SEP_X - 1 - STATUS_ICON_SIZE;
+    lv_obj_set_x(s_voice_conn, x);
+}
+
 void main_screen_init(int width, int height) {
     lv_obj_t *scr = lv_scr_act();
     lv_obj_set_style_bg_color(scr, lv_color_white(), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
     s_grid_height = height - 88 - 4;
-    /* 顶部状态栏有效区 y=0..31，视觉中心线 y=16。图标与小字本身已经
-     * 围绕该中心排列；IP 胶囊和 28px 数字字体按实际墨迹边界做下移补偿。 */
-    s_status = label(scr, LV_SYMBOL_BATTERY_FULL " --%  " LV_SYMBOL_WIFI, &lv_font_montserrat_14, 7, 9, 90);
-    s_bell = label(scr, LV_SYMBOL_BELL, &lv_font_montserrat_14, 98, 9);
-    lv_obj_add_flag(s_bell, LV_OBJ_FLAG_HIDDEN);
+    /* 顶部状态栏有效区 y=0..31，视觉中心线 y=16。图标与小字围绕该中心排列，
+     * 电量/网络文字标签宽度自适应（不锁 90px），语音图标按实际宽度 + 固定间距跟随；
+     * IP 胶囊和 28px 数字字体按实际墨迹边界做下移补偿。 */
+    s_status = label(scr, LV_SYMBOL_BATTERY_FULL " --% " LV_SYMBOL_WIFI, &lv_font_montserrat_14, STATUS_TEXT_X, STATUS_TEXT_Y);
+    /* 原企微铃铛位置：同一机器人位图用黑白反显表达连接状态。 */
+    s_voice_conn = lv_img_create(scr);
+    lv_obj_remove_style_all(s_voice_conn);
+    lv_img_set_src(s_voice_conn, &s_voice_icon_dsc);
+    /* 纵向：15 行位图里最后一行是空行，真实墨迹 14 行；放 y=10 让墨迹纵向中心
+     * 落在 16.5，与 WiFi 符号、百分比数字同一条视觉中心线（放 y=9 会整体高 1px，
+     * 且相对 WiFi 只往上多出 2px，看起来和网络符号不在同一行）。 */
+    lv_obj_set_pos(s_voice_conn, STATUS_TEXT_X, 10);
+    lv_obj_set_style_img_recolor_opa(s_voice_conn, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(s_voice_conn, 3, 0);
+    lv_obj_add_flag(s_voice_conn, LV_OBJ_FLAG_HIDDEN);
+    status_align_voice();
     box(scr, 116, 7, 1, 18, true);
     lv_obj_t *race = lv_img_create(scr); lv_img_set_src(race, &s_racebox_img);
     lv_obj_set_style_img_recolor(race, lv_color_black(), 0);
@@ -492,8 +545,10 @@ void main_screen_update_status(const char *status) {
     if (battery < 0) battery = 0;
     if (battery > 100) battery = 100;
     const char *icon = battery > 75 ? LV_SYMBOL_BATTERY_FULL : battery > 40 ? LV_SYMBOL_BATTERY_2 : battery > 10 ? LV_SYMBOL_BATTERY_1 : LV_SYMBOL_BATTERY_EMPTY;
-    char b[64]; snprintf(b, sizeof(b), "%s %d%%  %s", icon, battery, strstr(status, "WiFi") ? LV_SYMBOL_WIFI : "AP");
+    char b[64]; snprintf(b, sizeof(b), "%s %d%% %s", icon, battery, strstr(status, "WiFi") ? LV_SYMBOL_WIFI : "AP");
     text_changed(s_status, b);
+    /* 位数变化（99% → 100%）或 WiFi/AP 切换后标签宽度会变，语音图标重新跟随 */
+    status_align_voice();
 }
 void main_screen_show_remind(const char *msg) {
     text_changed(s_remind, msg); lv_obj_clear_flag(s_remind, LV_OBJ_FLAG_HIDDEN);
@@ -506,7 +561,18 @@ void main_screen_hide_remind(void) {
 bool main_screen_remind_visible(void) {
     return s_remind_visible;
 }
-void main_screen_set_reminder_enabled(bool enabled) {
-    if (enabled) lv_obj_clear_flag(s_bell, LV_OBJ_FLAG_HIDDEN);
-    else lv_obj_add_flag(s_bell, LV_OBJ_FLAG_HIDDEN);
+void main_screen_set_voice_connection(bool enabled, bool connected) {
+    if (!s_voice_conn) return;
+    /* 后台「启用语音」关闭时不显示任何语音图标（REQUIREMENTS §8）：
+     * 不做灰显或斜杠标记，避免在 400x300 单色屏上再引入一个需要辨认的小图形。 */
+    if (!enabled) {
+        lv_obj_add_flag(s_voice_conn, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    /* 显示前按当前电量文本宽度重新定位，避免隐藏期间文本变宽后贴到一起 */
+    status_align_voice();
+    lv_obj_set_style_bg_color(s_voice_conn, connected ? lv_color_white() : lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(s_voice_conn, connected ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
+    lv_obj_set_style_img_recolor(s_voice_conn, connected ? lv_color_black() : lv_color_white(), 0);
+    lv_obj_clear_flag(s_voice_conn, LV_OBJ_FLAG_HIDDEN);
 }

@@ -166,14 +166,19 @@ static esp_err_t config_get_handler(httpd_req_t *req) {
     cJSON_AddNumberToObject(d, "remind_worktime_hh", stored.remind_worktime_hh);
     cJSON_AddNumberToObject(d, "remind_worktime_mm", stored.remind_worktime_mm);
     cJSON_AddBoolToObject(d, "remind_enabled", stored.remind_enabled);
+    cJSON_AddNumberToObject(d, "remind_sign_hold_seconds", stored.remind_sign_hold_seconds);
+    cJSON_AddNumberToObject(d, "remind_worktime_hold_seconds", stored.remind_worktime_hold_seconds);
     cJSON_AddBoolToObject(d, "voice_enabled", stored.voice_enabled);
     cJSON_AddStringToObject(d, "voice_wake_word", stored.voice_wake_word);
     cJSON_AddStringToObject(d, "voice_server_url", stored.voice_server_url);
     cJSON_AddStringToObject(d, "voice_token", stored.voice_token[0] ? "******" : "");
     cJSON_AddStringToObject(d, "voice_device_id", stored.voice_device_id);
     cJSON_AddNumberToObject(d, "voice_volume", stored.voice_volume);
+    cJSON_AddNumberToObject(d, "system_volume", stored.system_volume);
     cJSON_AddNumberToObject(d, "voice_wake_threshold", stored.voice_wake_threshold);
     cJSON_AddNumberToObject(d, "voice_listen_mode", stored.voice_listen_mode);
+    cJSON_AddNumberToObject(d, "voice_quiet_hh_start", stored.voice_quiet_hh_start);
+    cJSON_AddNumberToObject(d, "voice_quiet_hh_end", stored.voice_quiet_hh_end);
     cJSON_AddNumberToObject(d, "voice_aec_level", stored.voice_aec_level);
     cJSON_AddNumberToObject(d, "voice_reply_seconds", stored.voice_reply_seconds);
     cJSON_AddBoolToObject(d, "voice_tts_scroll", stored.voice_tts_scroll);
@@ -321,6 +326,20 @@ static esp_err_t config_put_handler(httpd_req_t *req) {
     if (it && cJSON_IsNumber(it)) pending.remind_worktime_mm = (uint8_t)it->valueint;
     it = cJSON_GetObjectItem(j, "remind_enabled");
     if (it && cJSON_IsBool(it)) pending.remind_enabled = cJSON_IsTrue(it);
+    it = cJSON_GetObjectItem(j, "remind_sign_hold_seconds");
+    if (it && cJSON_IsNumber(it)) {
+        int sec = it->valueint;
+        if (sec < 5) sec = 5;
+        if (sec > 3600) sec = 3600;
+        pending.remind_sign_hold_seconds = (uint16_t)sec;
+    }
+    it = cJSON_GetObjectItem(j, "remind_worktime_hold_seconds");
+    if (it && cJSON_IsNumber(it)) {
+        int sec = it->valueint;
+        if (sec < 5) sec = 5;
+        if (sec > 3600) sec = 3600;
+        pending.remind_worktime_hold_seconds = (uint16_t)sec;
+    }
     it = cJSON_GetObjectItem(j, "voice_enabled");
     if (it && cJSON_IsBool(it)) pending.voice_enabled = cJSON_IsTrue(it);
     set_str_field(j, "voice_wake_word", pending.voice_wake_word, sizeof(pending.voice_wake_word));
@@ -333,10 +352,16 @@ static esp_err_t config_put_handler(httpd_req_t *req) {
     set_str_field(j, "voice_device_id", pending.voice_device_id, sizeof(pending.voice_device_id));
     it = cJSON_GetObjectItem(j, "voice_volume");
     if (it && cJSON_IsNumber(it)) pending.voice_volume = (uint8_t)(it->valueint > 100 ? 100 : (it->valueint < 0 ? 0 : it->valueint));
+    it = cJSON_GetObjectItem(j, "system_volume");
+    if (it && cJSON_IsNumber(it)) pending.system_volume = (uint8_t)(it->valueint > 100 ? 100 : (it->valueint < 0 ? 0 : it->valueint));
     it = cJSON_GetObjectItem(j, "voice_wake_threshold");
     if (it && cJSON_IsNumber(it)) pending.voice_wake_threshold = (uint8_t)(it->valueint > 99 ? 99 : (it->valueint < 40 ? 40 : it->valueint));
     it = cJSON_GetObjectItem(j, "voice_listen_mode");
     if (it && cJSON_IsNumber(it)) pending.voice_listen_mode = (uint8_t)(it->valueint > 2 ? 2 : it->valueint);
+    it = cJSON_GetObjectItem(j, "voice_quiet_hh_start");
+    if (it && cJSON_IsNumber(it)) pending.voice_quiet_hh_start = (uint8_t)(it->valueint > 23 ? 23 : (it->valueint < 0 ? 0 : it->valueint));
+    it = cJSON_GetObjectItem(j, "voice_quiet_hh_end");
+    if (it && cJSON_IsNumber(it)) pending.voice_quiet_hh_end = (uint8_t)(it->valueint > 23 ? 23 : (it->valueint < 0 ? 0 : it->valueint));
     it = cJSON_GetObjectItem(j, "voice_aec_level");
     if (it && cJSON_IsNumber(it)) pending.voice_aec_level = (uint8_t)(it->valueint > 3 ? 3 : it->valueint);
     it = cJSON_GetObjectItem(j, "voice_reply_seconds");
@@ -361,6 +386,9 @@ static esp_err_t config_put_handler(httpd_req_t *req) {
     /* 同步回运行时配置：自动返回秒数、提醒时间等在界面循环里直接读 g_cfg，
      * 不回写的话要等重启才生效 */
     *s_cfg = pending;
+    /* 两个音量跟随后台配置立即热生效，不用等重启 */
+    audio_service_set_system_volume(pending.system_volume);
+    audio_service_set_ring_volume(pending.voice_volume);
     /* RaceBox 的上传主题 / 自动清理 / 设备过滤立即热生效，不用等重启；
      * 否则"上传后清除内存"开关打开后要等到下次重启才起作用，同步后不会清理。 */
     racebox_service_reconfigure(pending.racebox_upload_topic, pending.racebox_auto_erase,

@@ -45,6 +45,13 @@ voice_state_t voice_service_state(void);
 const char *voice_service_last_error(void);
 /* 与小智请求头一致的稳定设备 ID。 */
 const char *voice_service_device_id(void);
+/* 后台 WSS 已完成 hello，可用于顶栏连接状态；不代表正在录音。 */
+bool voice_service_transport_ready(void);
+
+/* 当前是否处于配置的夜间免打扰时段。监听（唤醒词）与后台预热/重连都以此为准；
+ * 长按和网页手动启动不受限制。时段由 voice_quiet_hh_start/end 配置，
+ * 两者相等表示关闭该功能。RTC 时间不可信时返回 false（不静默）。 */
+bool voice_service_in_quiet_hours(void);
 
 #ifdef __cplusplus
 }

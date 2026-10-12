@@ -55,9 +55,16 @@ int main(int argc,char **argv) {
     lunar_date_t today; calendar_solar_to_lunar(2026,month,11,&today);
     char lunar[32]; calendar_lunar_str(&today,lunar,sizeof(lunar));
     main_screen_update_time(date,"09:41:26",NULL,lunar);
-    main_screen_update_status(empty?"AP | 0%":"WiFi | 46%");
+    /* full / low：顶栏电量文本最宽（100%）与最窄（9%）两种状态，
+     * 用来验证电量位数变化时语音图标不会与 WiFi 符号相贴或越过分隔线。 */
+    bool full_batt = argc>3 && strcmp(argv[3], "full") == 0;
+    bool low_batt  = argc>3 && strcmp(argv[3], "low") == 0;
+    main_screen_update_status(empty?"AP | 0%": full_batt?"WiFi | 100%": low_batt?"WiFi | 9%":"WiFi | 46%");
     main_screen_update_net(!empty, empty ? "192.168.4.1" : "20.20.10.114");
-    main_screen_set_reminder_enabled(!empty);
+    bool voice_fail = argc>3 && strcmp(argv[3], "voice-fail") == 0;
+    /* voice-off：后台「启用语音」关闭，顶栏图标必须隐藏（REQUIREMENTS §8）。 */
+    bool voice_off = argc>3 && strcmp(argv[3], "voice-off") == 0;
+    main_screen_set_voice_connection(!empty && !voice_off, !voice_fail && !voice_off);
     calendar_cell_t cells[42]={};
     int offset=(calendar_weekday(2026,month,1)+6)%7;
     for(int day=1;day<=calendar_month_days(2026,month);++day) {
@@ -111,6 +118,13 @@ int main(int argc,char **argv) {
             strcpy(d.updated_at,"2026-10-03");
         }
         weather_almanac_screen_update(&d); weather_almanac_screen_show();
+    }
+    /* ap-voice：离线/配网（状态栏是 "AP" 文本 + IP 胶囊）且语音开着，
+     * 核对顶栏左簇在小智图标显示时仍不与 IP 胶囊、分隔线挤在一起。 */
+    if (argc>3 && strcmp(argv[3],"ap-voice")==0) {
+        main_screen_update_status("AP | 76%");
+        main_screen_update_net(false, "192.168.4.1");
+        main_screen_set_voice_connection(true, false);
     }
     if (argc>3 && strcmp(argv[3],"cal")==0) main_screen_set_calendar_mode(true);
     if (argc>3 && strcmp(argv[3],"voice")==0) {
