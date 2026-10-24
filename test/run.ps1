@@ -154,7 +154,6 @@ if ($mainSource -notmatch 'worktime_expected_hours_elapsed\(wt->year, wt->month,
     $configSource -notmatch '"rem_wt_hd"' -or
     $httpSource -notmatch '"remind_sign_hold_seconds"' -or
     $httpSource -notmatch '"remind_worktime_hold_seconds"' -or
-    $httpSource -notmatch 'audio_service_set_ring_volume\(pending\.voice_volume\)' -or
     $webSource -notmatch 'remind_sign_hold_seconds' -or
     $webSource -notmatch 'remind_worktime_hold_seconds' -or
     $configHeader -notmatch 'system_volume' -or
@@ -172,8 +171,14 @@ if ($mainSource -notmatch 'g_remind_shown_tick' -or
     $mainSource -notmatch 'AUDIO_CUE_SIGNOUT' -or
     $mainSource -notmatch 'AUDIO_CUE_WORKTIME' -or
     $mainSource -match 'audio_service_beep\(\);' -or
-    $audioHeader -notmatch 'audio_service_set_ring_volume' -or
-    $audioSource -notmatch 's_ring_volume' -or
+    $mainSource -match 'audio_service_set_ring_volume' -or
+    $httpSource -match 'audio_service_set_ring_volume' -or
+    $audioHeader -match 'audio_service_set_ring_volume' -or
+    $audioSource -match 's_ring_volume' -or
+    $audioSource -match 'scale_cue_volume' -or
+    $audioSource -match 'RING_CUE_VOLUME' -or
+    $audioSource -match 'RING_AMPLITUDE' -or
+    $audioSource -notmatch 'tone_amp\(freq, dur_ms, 9000\)' -or
     $audioSource -notmatch 'AUDIO_CUE_SIGNIN' -or
     $audioSource -notmatch 'AUDIO_CUE_SIGNOUT' -or
     $audioSource -notmatch 'AUDIO_CUE_WORKTIME') {

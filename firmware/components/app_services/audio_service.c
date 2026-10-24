@@ -17,26 +17,13 @@ static esp_codec_dev_handle_t s_record = NULL;
  * RaceBox 提示音、开机/关机音、beep 若并发写入会交错成杂音。
  * 整段旋律（多音）持锁一次，保证不被别的提示音插进来打断。 */
 static SemaphoreHandle_t s_lock = NULL;
-/* 普通操作音量：系统提示音（按键音、开关机音、RaceBox 状态音等）的基准，
- * 后台可调，默认 60；各 cue 的相对大小按这个基准等比缩放。 */
+/* 普通操作音量：除小智 TTS 外的一切声音（按键音、开关机音、RaceBox 状态音、
+ * 企微签到/签退与工时记录提醒铃声）都直接按这个值播放，后台可调，默认 60。
+ * 小智 TTS 走独立的“智能语音音量”（voice_begin 传入），两路互不影响。 */
 static int s_system_volume = 60;
 static int s_voice_volume = 60;
 static bool s_voice_active = false;
-/* 提醒铃声音量：取后台配置的音量，默认与系统基准一致；保存配置后热更新。
- * 之前提醒只有一声 0.15s 的 1kHz 短 beep，按固定 60 音量根本听不见。 */
-static int s_ring_volume = 60;
-/* 提醒铃声波形幅度：比普通提示音更接近满幅，配合后台音量让远处也听得见 */
-#define RING_AMPLITUDE 26000
-
-void audio_service_set_ring_volume(int vol) {
-    if (vol < 0) vol = 0;
-    if (vol > 100) vol = 100;
-    s_ring_volume = vol;
-    ESP_LOGI(TAG, "reminder ring volume=%d", s_ring_volume);
-}
-
-/* 普通操作音量（系统提示音基准）。cue 自带的音量是相对 60 的设计值，
- * 这里按比例缩放：默认 60 与历史完全一致，调大更响、调小更轻，调到 0 静音。 */
+/* 设置普通操作音量：直接作为非小智声音的播放音量（0..100），保存后热生效 */
 void audio_service_set_system_volume(int vol) {
     if (vol < 0) vol = 0;
     if (vol > 100) vol = 100;
@@ -50,14 +37,6 @@ void audio_service_poweroff_sound(void);
 static void lock_audio(void)   { if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY); }
 static void unlock_audio(void) { if (s_lock) xSemaphoreGive(s_lock); }
 static int restore_volume(void) { return s_voice_active ? s_voice_volume : s_system_volume; }
-
-/* 系统提示音音量按后台“普通操作音量”等比缩放（基准 60，默认值与历史一致） */
-static int scale_cue_volume(int vol) {
-    int scaled = vol * s_system_volume / 60;
-    if (scaled > 100) scaled = 100;
-    if (scaled < 0) scaled = 0;
-    return scaled;
-}
 
 static void mic_self_test(void) {
     if (s_record == NULL) return;
@@ -133,8 +112,10 @@ void audio_service_init(void) {
 
 /* 播放一段正弦提示音（16kHz 2ch 16bit），阻塞写入 I2S。
  * 调用前必须已持有 s_lock（整段旋律持锁，避免被别的提示音插断）。
- * amp 是波形幅度（0..32767），提醒铃声用满幅保证远处也听得见。 */
-static void tone_amp(uint16_t freq, uint32_t dur_ms, uint8_t vol, int16_t amp)
+ * 所有非小智声音统一按 s_system_volume（后台“普通操作音量”）播放，
+ * 且波形幅度一律用 9000（见 tone），按键音、开关机音、RaceBox 状态音、
+ * 签到/签退/工时记录提醒铃声的比例完全一致。 */
+static void tone_amp(uint16_t freq, uint32_t dur_ms, int16_t amp)
 {
     if (!s_playback) return;
     const int sr = 16000;
@@ -148,7 +129,7 @@ static void tone_amp(uint16_t freq, uint32_t dur_ms, uint8_t vol, int16_t amp)
         buf[i * 2] = v;
         buf[i * 2 + 1] = v;
     }
-    esp_codec_dev_set_out_vol(s_playback, vol);
+    esp_codec_dev_set_out_vol(s_playback, s_system_volume);
     esp_codec_dev_write(s_playback, (uint8_t *)buf, (uint32_t)(n * 2 * sizeof(int16_t)));
     /* 提示音结束后恢复进入提示音前的播放上下文：小智会话中恢复小智音量，
      * 其他时候恢复系统原始基准，不让后台 voice_volume 改变提示音。 */
@@ -156,19 +137,18 @@ static void tone_amp(uint16_t freq, uint32_t dur_ms, uint8_t vol, int16_t amp)
     heap_caps_free(buf);
 }
 
-static void tone(uint16_t freq, uint32_t dur_ms, uint8_t vol)
+static void tone(uint16_t freq, uint32_t dur_ms)
 {
-    /* 系统提示音按后台“普通操作音量”缩放；提醒铃声直接用自己的配置音量 */
-    tone_amp(freq, dur_ms, scale_cue_volume(vol), 9000);
+    tone_amp(freq, dur_ms, 9000);
 }
 
 /* 开机音：两声上行“滴-嘟” */
 void audio_service_boot_sound(void)
 {
     lock_audio();
-    tone(660, 130, 70);
+    tone(660, 130);
     vTaskDelay(pdMS_TO_TICKS(60));
-    tone(990, 180, 70);
+    tone(990, 180);
     unlock_audio();
 }
 
@@ -177,11 +157,11 @@ void audio_service_boot_sound(void)
 void audio_service_poweroff_sound(void)
 {
     lock_audio();
-    tone(784, 160, 70);
+    tone(784, 160);
     vTaskDelay(pdMS_TO_TICKS(70));
-    tone(587, 160, 70);
+    tone(587, 160);
     vTaskDelay(pdMS_TO_TICKS(70));
-    tone(392, 320, 70);
+    tone(392, 320);
     /* esp_codec_dev_write 只是把数据入 I2S 环形缓冲便返回，真实播音滞后；
      * 不加等待的话 esp_restart 会直接复位外设、把声音截断，所以这里等 DMA 播完。 */
     vTaskDelay(pdMS_TO_TICKS(600));
@@ -194,70 +174,71 @@ void audio_service_cue(audio_cue_t cue)
     lock_audio();
     switch (cue) {
     case AUDIO_CUE_START:          /* 上行两声：开始下载 */
-        tone(523, 90, 70);
+        tone(523, 90);
         vTaskDelay(pdMS_TO_TICKS(50));
-        tone(784, 120, 70);
+        tone(784, 120);
         break;
     case AUDIO_CUE_DEVICE_FOUND:   /* 单声高音：已搜到设备 */
-        tone(1046, 90, 70);
+        tone(1046, 90);
         break;
     case AUDIO_CUE_DOWNLOAD_DONE:  /* 上行两声（更高）：下载完成 */
-        tone(659, 100, 70);
+        tone(659, 100);
         vTaskDelay(pdMS_TO_TICKS(60));
-        tone(880, 150, 70);
+        tone(880, 150);
         break;
     case AUDIO_CUE_UPLOAD_DONE:    /* 上行三声：上传完成 */
-        tone(523, 90, 70);
+        tone(523, 90);
         vTaskDelay(pdMS_TO_TICKS(50));
-        tone(659, 90, 70);
+        tone(659, 90);
         vTaskDelay(pdMS_TO_TICKS(50));
-        tone(784, 170, 70);
+        tone(784, 170);
         break;
     case AUDIO_CUE_ERROR:          /* 下行双音：出错 / 未发现设备 */
-        tone(466, 150, 80);
+        tone(466, 150);
         vTaskDelay(pdMS_TO_TICKS(70));
-        tone(349, 300, 80);
+        tone(349, 300);
         break;
     case AUDIO_CUE_CANCEL:         /* 下行两声：已中断 */
-        tone(700, 90, 70);
+        tone(700, 90);
         vTaskDelay(pdMS_TO_TICKS(60));
-        tone(440, 170, 70);
+        tone(440, 170);
         break;
     case AUDIO_CUE_NO_DATA:        /* 同高两声：设备无定位数据 */
-        tone(523, 110, 70);
+        tone(523, 110);
         vTaskDelay(pdMS_TO_TICKS(90));
-        tone(523, 110, 70);
+        tone(523, 110);
         break;
     case AUDIO_CUE_KEY:            /* 统一按键音：极短一声轻响，音量略低 */
-        tone(1318, 45, 50);
+        tone(1318, 45);
         break;
     case AUDIO_CUE_KEY_TOGGLE:     /* 同步中短按：上行两声轻响（收起/展开弹窗） */
-        tone(988, 45, 50);
+        tone(988, 45);
         vTaskDelay(pdMS_TO_TICKS(40));
-        tone(1318, 45, 50);
+        tone(1318, 45);
         break;
-    /* 企微签到 / 签退 / 记录工时提醒铃声：约 1 秒的多音旋律，
-     * 音量统一取后台配置（s_ring_volume），不用固定 cue 音量。 */
+    /* 企微签到 / 签退 / 记录工时提醒铃声：约 1 秒的多音旋律。
+     * 音量、波形幅度与普通按键音完全同口径（都用 tone()），
+     * 区别只在旋律长短和音高组合，不做任何额外放大。 */
     case AUDIO_CUE_SIGNIN:         /* 上行三音：该签到了 */
-        tone_amp(523, 120, s_ring_volume, RING_AMPLITUDE);
+        tone(523, 120);
         vTaskDelay(pdMS_TO_TICKS(60));
-        tone_amp(659, 120, s_ring_volume, RING_AMPLITUDE);
+        tone(659, 120);
         vTaskDelay(pdMS_TO_TICKS(60));
-        tone_amp(784, 220, s_ring_volume, RING_AMPLITUDE);
+        tone(784, 220);
         break;
     case AUDIO_CUE_SIGNOUT:        /* 下行三音：该签退了 */
-        tone_amp(784, 120, s_ring_volume, RING_AMPLITUDE);
+        tone(784, 120);
         vTaskDelay(pdMS_TO_TICKS(60));
-        tone_amp(659, 120, s_ring_volume, RING_AMPLITUDE);
+        tone(659, 120);
         vTaskDelay(pdMS_TO_TICKS(60));
-        tone_amp(523, 220, s_ring_volume, RING_AMPLITUDE);
+        tone(523, 220);
         break;
     case AUDIO_CUE_WORKTIME:       /* 双音重复：该记工时了 */
-        tone_amp(880, 130, s_ring_volume, RING_AMPLITUDE);
+        tone(880, 130);
         vTaskDelay(pdMS_TO_TICKS(70));
-        tone_amp(880, 130, s_ring_volume, RING_AMPLITUDE);
+        tone(880, 130);
         vTaskDelay(pdMS_TO_TICKS(70));
-        tone_amp(1174, 240, s_ring_volume, RING_AMPLITUDE);
+        tone(1174, 240);
         break;
     default:
         break;

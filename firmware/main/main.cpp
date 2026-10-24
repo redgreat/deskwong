@@ -185,8 +185,8 @@ static void on_remind(remind_type_t type) {
             Lvgl_unlock();
         }
         audio_service_cue(cue);
-        ESP_LOGI(TAG, "remind: %s (ring volume=%u, hold %lums)",
-                 msg, (unsigned)g_cfg.voice_volume, (unsigned long)g_remind_hold_ms);
+        ESP_LOGI(TAG, "remind: %s (hold %lums, cue base volume %u)",
+                 msg, (unsigned long)g_remind_hold_ms, (unsigned)g_cfg.system_volume);
     }
 }
 
@@ -714,9 +714,9 @@ extern "C" void app_main(void) {
     racebox_service_init(g_cfg.racebox_upload_topic, g_cfg.racebox_auto_erase,
                          g_cfg.racebox_device_name, g_cfg.racebox_device_lock);
     audio_service_init();
-    /* 两个音量都跟随后台配置；之后网页保存会再次热更新 */
+    /* 普通操作音量跟随后台配置；之后网页保存会再次热更新。
+     * 只有小智 TTS 用独立的“智能语音音量”。 */
     audio_service_set_system_volume(g_cfg.system_volume);
-    audio_service_set_ring_volume(g_cfg.voice_volume);
     /* 语音（小智）只初始化，不在这里联网：此时 WiFi 还没起来。
      * 对话由唤醒词、BOOT 短按或 POST /api/voice/start 触发。 */
     voice_service_init(&g_cfg);

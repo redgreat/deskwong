@@ -386,9 +386,8 @@ static esp_err_t config_put_handler(httpd_req_t *req) {
     /* 同步回运行时配置：自动返回秒数、提醒时间等在界面循环里直接读 g_cfg，
      * 不回写的话要等重启才生效 */
     *s_cfg = pending;
-    /* 两个音量跟随后台配置立即热生效，不用等重启 */
+    /* 普通操作音量跟随后台配置立即热生效，不用等重启 */
     audio_service_set_system_volume(pending.system_volume);
-    audio_service_set_ring_volume(pending.voice_volume);
     /* RaceBox 的上传主题 / 自动清理 / 设备过滤立即热生效，不用等重启；
      * 否则"上传后清除内存"开关打开后要等到下次重启才起作用，同步后不会清理。 */
     racebox_service_reconfigure(pending.racebox_upload_topic, pending.racebox_auto_erase,
