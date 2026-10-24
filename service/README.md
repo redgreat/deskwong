@@ -36,11 +36,16 @@ Compose 使用命名卷 `deskwong-settings`，容器重建和断电重启后仍�
 
 ## AI 用量
 
-`DESKWONG_AI_UPSTREAM` 可代理自建适配器。否则读取 `DESKWONG_CODEX_ACCESS_TOKEN`，
-或 `DESKWONG_CODEX_AUTH_FILE` 指定的 Codex auth.json（默认 `~/.codex/auth.json`）。
-直接设置 Access Token 时还应设置 `DESKWONG_CODEX_ACCOUNT_ID`。凭据不打包进镜像；
-接口结果缓存 60 秒。Docker 应只读挂载整个 `.codex` 目录，不能只挂载 `auth.json`：
-Codex 刷新登录时会原子替换文件，只挂载单文件会让容器继续读取旧 inode。
+后台可从四个应用选择一至两个，并为每个应用设置独立轮询周期；未选应用不会请求上游。
+
+- ChatGPT/Codex：读取 `DESKWONG_CODEX_AUTH_FILE`（默认 `~/.codex/auth.json`）。Docker 应只读挂载整个 `.codex` 目录，因为 Codex 刷新登录会原子替换文件。
+- Devin：Linux Docker 推荐在后台选择“组织 ID + Bearer Token”；也可显式挂载客户端目录，优先读取 `DESKWONG_DEVIN_CREDENTIALS_FILE` 中的 `windsurf_api_key`，没有该文件时读取 `DESKWONG_DEVIN_STATE_DB` 的 `windsurfAuthStatus`，通过 Connect RPC `GetUserStatus` 取得日/周剩余额度。
+- MiMo Desktop：Linux Docker 推荐在后台选择“OAuth Refresh Token（Linux）”。服务用 refresh token 获取短期 access token并读取 Desktop 官方 `/user/usage`；上游轮换 refresh token 时立即以 AES-256-GCM 加密写回 SQLite，容器重启后继续使用。也可显式挂载 `DESKWONG_MIMO_AUTH_FILE` 读取客户端登录态。
+- Claude Code：当前保留外部 API 接口，待有账号后验证。
+
+凭据不打包进镜像，也不写入日志。后台填写的 Token 使用 SQLite 加密字段保存；客户端登录态目录仅以只读方式挂载。
+
+基础 Compose 只保留 ChatGPT/Codex 登录态挂载（宿主目录可用 `DESKWONG_CODEX_AUTH_DIR` 覆盖），不会要求 Linux 主机存在 Devin 或 MiMo Desktop 目录。确需读取桌面客户端登录态时，复制 `docker-compose.client-login.example.yml` 为本机 override，填写其中三个宿主目录环境变量后再启动；不要提交带真实路径或凭据的 override。
 
 ## 小智上下文
 

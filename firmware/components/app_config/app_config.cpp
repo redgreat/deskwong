@@ -60,6 +60,7 @@ void app_config_defaults(app_config_t *cfg) {
     strcpy(cfg->racebox_upload_topic, "deskwong/racebox/data");
     strcpy(cfg->racebox_device_name, "RaceBox");
     strcpy(cfg->racebox_device_lock, "");
+    cfg->racebox_enabled = true;
     cfg->racebox_auto_erase = false;
     cfg->remind_signin_hh = 8;
     cfg->remind_signin_mm = 25;
@@ -144,6 +145,9 @@ esp_err_t app_config_load(app_config_t *cfg) {
     get_str(h, "rb_topic", cfg->racebox_upload_topic, sizeof(cfg->racebox_upload_topic));
     get_str(h, "rb_device", cfg->racebox_device_name, sizeof(cfg->racebox_device_name));
     get_str(h, "rb_lock", cfg->racebox_device_lock, sizeof(cfg->racebox_device_lock));
+    uint8_t rb_enabled = cfg->racebox_enabled ? 1 : 0;
+    nvs_get_u8(h, "rb_enabled", &rb_enabled);
+    cfg->racebox_enabled = rb_enabled != 0;
     uint8_t rb_erase = cfg->racebox_auto_erase ? 1 : 0;
     nvs_get_u8(h, "rb_erase", &rb_erase);
     cfg->racebox_auto_erase = rb_erase != 0;
@@ -244,6 +248,7 @@ esp_err_t app_config_save(const app_config_t *cfg) {
     if ((err = nvs_set_str(h, "rb_topic", cfg->racebox_upload_topic)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_str(h, "rb_device", cfg->racebox_device_name)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_str(h, "rb_lock", cfg->racebox_device_lock)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_u8(h, "rb_enabled", cfg->racebox_enabled ? 1 : 0)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_u8(h, "rb_erase", cfg->racebox_auto_erase ? 1 : 0)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_u16(h, "mqtt_port", cfg->mqtt_port)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_u8(h, "rem_si_hh", cfg->remind_signin_hh)) != ESP_OK) { nvs_close(h); return err; }

@@ -19,6 +19,7 @@
     mqtt_broker: '', mqtt_port: 1883, mqtt_user: '', mqtt_pass: '',
     racebox_upload_topic: 'deskwong/racebox/data', racebox_device_name: 'RaceBox',
     racebox_device_lock: '',
+    racebox_enabled: true,
     racebox_auto_erase: false,
     remind_signin_hh: 8, remind_signin_mm: 25,
     remind_signout_hh: 17, remind_signout_mm: 35,
@@ -213,6 +214,16 @@
 
     <section>
       <h2>RaceBox</h2>
+      <div class="setting-row">
+        <div>
+          <strong>启用 RaceBox 设备同步</strong>
+          <small>关闭后隐藏桌面 RaceBox 状态并停用 KEY 同步；配置和历史数据仍会保留。</small>
+        </div>
+        <label class="switch" aria-label="启用 RaceBox 设备同步">
+          <input type="checkbox" bind:checked={cfg.racebox_enabled} />
+          <span class="switch-track"><span class="switch-thumb"></span></span>
+        </label>
+      </div>
       <label>Broker 地址<input bind:value={cfg.mqtt_broker} placeholder="例如 mqtt.example.com 或 mqtts://mqtt.example.com:8883" /></label>
       <label>端口<input type="number" bind:value={cfg.mqtt_port} /></label>
       <label>用户名<input bind:value={cfg.mqtt_user} /></label>

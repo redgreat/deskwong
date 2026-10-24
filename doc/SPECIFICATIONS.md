@@ -24,11 +24,23 @@
 
 ### 2.2 AI 用量
 
-`GET {base}/ai/usage`，Bearer 鉴权。设备识别 `chatgpt_5h`/300 分钟和 `chatgpt_weekly`/10080 分钟窗口，使用 `remaining_percent` 与 `resets_at`。
+`GET {base}/ai/usage`，Bearer 鉴权。返回按 Web 后台顺序排列、最多两个已启用应用；每个应用包含稳定 `id`、桌面短名 `name`、状态与最多两个主要窗口。窗口使用稳定 `id`、短标签 `label`、`remaining_percent` 与 `resets_at`；`remaining_percent` 为 0～100 的剩余百分比，未知时省略，`resets_at` 为 Unix 秒，未知时省略。`status` 取 `live`、`cached`、`stale`、`unavailable`，缓存状态可附 `observed_at`。
 
 ```json
-{"code":0,"data":{"providers":[{"id":"chatgpt_5h","window_minutes":300,"remaining_percent":72,"resets_at":1789223400},{"id":"chatgpt_weekly","window_minutes":10080,"remaining_percent":44,"resets_at":1789741800}]}}
+{"code":0,"data":{"apps":[{"id":"chatgpt","name":"GPT","status":"live","windows":[{"id":"chatgpt_5h","label":"5时","window_minutes":300,"remaining_percent":72,"resets_at":1789223400},{"id":"chatgpt_weekly","label":"周","window_minutes":10080,"remaining_percent":44,"resets_at":1789741800}]},{"id":"devin","name":"Devin","status":"cached","observed_at":1792809000,"windows":[{"id":"devin_daily","label":"日","remaining_percent":61,"resets_at":1792828800},{"id":"devin_weekly","label":"周","remaining_percent":28,"resets_at":1793260800}]}]}}
 ```
+
+兼容期内聚合服务可继续接受旧 `providers` 平铺结构并归入 `chatgpt` 应用，但新固件和服务以 `apps[].windows[]` 为主契约。桌面只消费响应中的前两个已配置应用；服务端必须在保存配置时完成“四选二”校验，不能依赖设备截断。厂商会员额度若只能从本机登录态或未公开只读接口取得，适配器运行在自建服务所在主机，凭据只读挂载或通过只写配置注入；日志、响应和缓存不得包含 Token、Cookie、账号标识或客户端数据库内容。
+
+服务端 `/admin` 的 AI 应用配置至少包含：稳定应用 `id`、`enabled`、显示 `order`、`refresh_minutes`、认证方式 `auth_mode` 及对应配置。`client_login` 读取只读挂载的 Codex、Devin 或 MiMo 登录态；Devin `manual_token` 保存组织 ID 与加密 Bearer Token；MiMo `oauth_refresh` 保存加密 Refresh Token；`password`/`external_api` 保留给兼容适配服务。保存时必须原子校验：启用项恰好一至两个、顺序不重复、刷新频率为 1～1440、所选认证方式字段完整；失败不得部分生效。
+
+Devin 客户端登录态模式读取 `credentials.toml` 的 `windsurf_api_key` 与可选 `api_server_url`，调用 `POST {api_server_url}/exa.seat_management_pb.SeatManagementService/GetUserStatus`，使用 `dailyQuotaRemainingPercent`、`weeklyQuotaRemainingPercent` 及对应 Unix 重置时间。手动令牌模式调用 `GET https://app.devin.ai/api/{organization}/billing/quota/usage`，把返回的已用百分比换算为剩余百分比，并遵守 `hide_daily_quota`。
+
+MiMo Desktop 登录态模式读取 `auth.json.xiaomi`；Linux `oauth_refresh` 模式直接读取后台加密保存的 Refresh Token。两者都调用 `https://account.xiaomi.com/oauth2/token` 获取短期 access token，再调用 `GET https://mimo-server-cn.xiaomimimo.com/api/user/usage`。`oauth_refresh` 收到轮换后的 Refresh Token 时必须在与后台保存互斥的临界区内加密写回 SQLite；写入失败时本次刷新报错，不能假装持久化成功。该接口的 `percent` 是当前会员窗口已用百分比，`resetDate` 是重置时间，桌面显示 `100-percent`。MiMo Token Plan 与 Desktop 会员是两套独立额度，不能用本地数据库 Token 数或 Token Plan 额度冒充 Desktop 会员剩余额度。
+
+轮询调度以启用集合为唯一来源。配置保存后，新增或频率变化的任务立即首刷并按新周期调度，取消选择的任务必须取消计时器且不得再调用上游；正在进行中的只读请求允许自然结束，但其结果不得重新激活已禁用应用。单个应用刷新失败只更新该应用状态并保留最近成功缓存，不影响另一个应用。外部适配服务需返回单应用结构，服务端校验应用 `id` 后再合并到 `/ai/usage`，禁止把外部服务返回的额外应用绕过“四选二”限制。固件收到一个应用时使用现有单应用大卡布局；收到两个应用时使用双紧凑卡布局，不能为第二个未选择应用绘制占位卡。
+
+AI 图标资源使用同一 provider id 映射：`chatgpt`、`devin`、`claude`、`mimo`。单应用主屏使用 24×24 alpha 1-bit 图标，AI 独立页使用 32×32 或同源高分辨率资源，双应用紧凑布局使用可辨识的 16×16 版本。品牌图标只用于识别，不用颜色传递状态；`cached`/`stale`/`unavailable` 通过文字或黑白反显表达。每个图标需记录原始来源、许可和转换脚本，不能直接提交来源不明的网络位图。
 
 ### 2.3 黄历
 
@@ -64,6 +76,8 @@
 - 日志只记录脱敏设备标识、状态、耗时和快照年龄，不记录 Token、声纹信息、工时日明细或轨迹内容。
 
 ## 3. RaceBox BLE
+
+设备配置增加 `racebox_enabled` 布尔值，默认 `true` 并持久化到 NVS。保存从 `true` 变为 `false` 时，若同步处于运行态先走现有取消路径并等待 BLE 停止，再隐藏同步层、顶栏 RaceBox 图标/完成标记/点数；不得触发擦除。关闭状态下 `racebox_service_trigger`、按日 tick 和同步 UI 入口均不得调用。重新启用时恢复服务过滤配置和现有 KEY 行为，不自动立即开始一次同步。
 
 - Service：`6e400001-b5a3-f393-e0a9-e50e24dcca9e`
 - RX 写：`6e400002-b5a3-f393-e0a9-e50e24dcca9e`
@@ -134,7 +148,7 @@
 - 主屏顶部状态栏的有效高度为 `y=0..31`、视觉中心线为 `y=16`。电量/WiFi、小智连接状态、分隔线、RaceBox 图标及完成标记、轨迹点胶囊、日历翻页图标、离线 IP 胶囊和右侧时间，都应以实际可见字形或图形边界为准，使垂直中心落在 `y=16±1px`；不能只按字体行框机械居中。企微提醒铃不再创建常驻对象。小智状态使用15×15自绘1-bit机器人图标，成功为透明/白底黑色墨迹，失败或等待重连时保持相同位图并切换成黑底白色墨迹，不得使用字体音乐符号或警告三角；电量/网络文本标签宽度必须自适应，不得锁死 90px（锁死时 100% 电量的 WiFi 墨迹会伸进预留宽度里，图标按标签框定位就会被顶住）；语音图标紧跟在电量标签实际宽度右缘之后固定 6px（渲染出的字形墨迹间隙为 8px，标签框右缘比墨迹右缘多约 2px），间距不随电量位数变化，9% 与 100% 都保持同一观感，并保底不越过 x=116 分隔线；不要改成"在文字右缘与分隔线之间居中"，那样低电量时图标会飘到两段空白中间，看起来另起一列；纵向位图墨迹 14 行，顶部取 y=10 使墨迹中心落在 y=16.5，与 WiFi 符号和百分比数字同一条视觉中心线，不得沿用 y=9（整体高 1px，看起来和网络符号不在同一行）。语音关闭时隐藏，不灰显也不加斜杠标记，不得推动RaceBox、轨迹点或时间的位置。顶栏排版用 `test/ui_preview/status_bar_check.py` 量测真实渲染像素：相邻元素最小水平间隙 ≥4px，各元素墨迹纵向中心在 y=16±2 内。28px时间需针对字形上偏补偿下移，顶部至少保留2px可见留白，底部不得碰到y=32分隔线。正常、空数据、RaceBox同步、日历翻页、离线/AP及语音成功/失败状态均需用生产LVGL预览检查。
 - 主屏月工时百分比胶囊高 20px，放在顶部横线下沿 `y=34` 与月总进度条上沿 `y=64` 之间的 30px 标题区域内垂直居中，即胶囊顶部 `y=39`；胶囊上下各保留 5px，不能与下方进度条相贴。月工时数字行与胶囊的视觉基线需协调，并在正常月、六行月和空数据预览中核对。
 - 天气黄历弹窗为 400×300 主屏上的 380×264 覆盖卡片：第一排 7 列显示今天起连续 7 天，第二排 7 列显示当前起连续 7 个小时，第三排显示详细宜忌。天气单元不画边框，以近正方形留白组织“图标与阴晴 / 温度 / 日期或小时”三层；日期天气、小时天气和黄历之间只用轻量虚线分隔，右下角不显示辅助小字。天气温度使用 `℃`（U+2103），日预报为 `最高℃/最低℃`，小时预报为 `温度℃`。温度与日期/小时必须作为独立文本行绘制，每列分别取得文本实际像素宽度后以 `列左边界 + (52 - 文本宽度) / 2` 定位；不得把两行合并进同一标签后仅设置 `LV_TEXT_ALIGN_CENTER`。允许每个文本行共用一个轻量绘制对象，以满足 128KB LVGL 对象池安全余量。验收时同时检查生产 LVGL 预览和开发板实屏，最终以实屏位置为准。
-- 按键优先级：RaceBox 运行态高于普通页面；同步中 `KEY` 短按切换同步层、长按取消。空闲态长按 `KEY` 进入/退出日历，日历内 `KEY`/`BOOT` 短按上月/下月，30 秒无操作退出；普通主屏 `BOOT` 短按开关天气黄历、长按约 3 秒开配网热点。`BOOT + PWR` 上电进入 ROM 下载模式必须保留。
+- 按键优先级：提醒条关闭动作最高；RaceBox 开启且运行时高于普通页面，同步中 `KEY` 短按切换同步层、长按取消。空闲态长按 `KEY` 进入/退出日历，日历内 `KEY`/`BOOT` 短按上月/下月，30 秒无操作退出。RaceBox 开启且空闲时，普通主屏 `KEY` 短按触发同步；RaceBox 关闭时，普通主屏 `KEY` 短按开关 AI 用量页。普通主屏 `BOOT` 短按开关天气黄历，AI 用量页和天气黄历页互斥；长按 `BOOT` 约 3 秒开配网热点。`BOOT + PWR` 上电进入 ROM 下载模式必须保留。
 - 语音 UI 事件采用可重放状态，不得只在网络回调中单次尝试获取 LVGL 锁；UI 任务须在锁可用时补绘最新状态、问题和回答。唤醒命中到首次显示“连接中”目标不超过 1 秒。问题与回答正文使用独立 GB2312 14px 字体并保持两行省略。
 - WebSocket 所有文本与二进制发送必须经同一发送互斥或单一发送队列串行化；该发送同步不得复用会阻塞 stop/teardown/UI 的生命周期互斥锁。发送失败需保留错误原因并安全清理会话，不能让 `tools/list` 等 MCP 回复与 Opus 上行并发破坏连接。
 - 语音连接生命周期与一次对话解耦：联网后由后台任务完成 OTA 预取、WSS hello 和断线退避重连；空闲预连接不得读取或上传麦克风数据，只有唤醒/调试 start 后才发送 listen 并启动 Opus。OTA 地址/token 只存内存并带有效期，鉴权失败时清缓存重取；WSS 空闲保活失败不得阻塞 UI/WakeNet。实机验收分别记录冷连接和已预连接热唤醒耗时。

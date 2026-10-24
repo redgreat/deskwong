@@ -36,6 +36,7 @@
 #include "main_screen.h"
 #include "sync_screen.h"
 #include "weather_almanac_screen.h"
+#include "ai_usage_screen.h"
 #include "voice_screen.h"
 
 static const char *TAG = "main";
@@ -281,8 +282,8 @@ static void job_voice_context(void *ctx) {
     snap.ai_count = g_ai_count;
     snap.weather = g_weather;
     snap.weather_detail = g_weather_detail;
-    snap.racebox_points = racebox_service_point_count();
-    snap.racebox_complete = racebox_service_synced_today();
+    snap.racebox_points = g_cfg.racebox_enabled ? racebox_service_point_count() : -1;
+    snap.racebox_complete = g_cfg.racebox_enabled && racebox_service_synced_today();
     voice_context_service_report(&snap);
 }
 
@@ -461,7 +462,7 @@ static void ui_update_task(void *arg) {
 
         /* 每秒：提醒轮询 + 时间/状态刷新 */
         if (tick % 5 == 0) {
-            racebox_service_day_tick(dt.year, dt.month, dt.day);
+            if (g_cfg.racebox_enabled) racebox_service_day_tick(dt.year, dt.month, dt.day);
             static int last_points = -1;
             static bool last_synced = false;
             int points = racebox_service_point_count();
@@ -537,16 +538,14 @@ static void ui_update_task(void *arg) {
                     snprintf(weather, sizeof(weather), "%.24s\n%dC / %d%%", g_weather.text, g_weather.temp, g_weather.humidity);
                 else
                     snprintf(weather, sizeof(weather), "天气 --");
-                const ai_provider_t *ai5h = NULL, *aiweek = NULL;
-                for (int i = 0; i < g_ai_count; ++i) {
-                    if (!strstr(g_ai[i].id, "chatgpt") && !strstr(g_ai[i].id, "codex")) continue;
-                    if (g_ai[i].window_minutes == 300) ai5h = &g_ai[i];
-                    if (g_ai[i].window_minutes == 10080) aiweek = &g_ai[i];
-                }
+                main_screen_set_racebox_enabled(g_cfg.racebox_enabled);
+                if (g_cfg.racebox_enabled) ai_usage_screen_hide();
                 main_screen_update_summary(g_worktime.recorded_hours,
                     display_expected_hours(&g_worktime, &dt),
-                    weather, g_weather.text[0] ? g_weather.icon : 0, lunar_full, ai5h, aiweek,
-                    racebox_service_synced_today(), racebox_service_point_count(), g_temp, g_humi);
+                    weather, g_weather.text[0] ? g_weather.icon : 0, lunar_full, g_ai, g_ai_count,
+                    g_cfg.racebox_enabled && racebox_service_synced_today(),
+                    g_cfg.racebox_enabled ? racebox_service_point_count() : 0, g_temp, g_humi);
+                ai_usage_screen_update(g_ai, g_ai_count);
                 main_screen_update_calendar(cells);
                 Lvgl_unlock();
             }
@@ -577,7 +576,7 @@ static void button_task(void *arg) {
         EventBits_t bits = xEventGroupWaitBits(GP18ButtonGroups, 0x07, pdTRUE, pdFALSE, pdMS_TO_TICKS(500));
         if (bits & 0x04) {
             racebox_state_t state = racebox_service_state();
-            if (state != RACEBOX_IDLE && state != RACEBOX_DONE && state != RACEBOX_FAILED) {
+            if (g_cfg.racebox_enabled && state != RACEBOX_IDLE && state != RACEBOX_DONE && state != RACEBOX_FAILED) {
                 ESP_LOGI(TAG, "KEY long press -> cancel racebox sync");
                 racebox_service_cancel();
             } else {
@@ -587,7 +586,7 @@ static void button_task(void *arg) {
                 g_worktime_year = now.year; g_worktime_month = now.month;
                 worktime_service_load(now.year, now.month, &g_worktime);
                 g_calendar_last_action = xTaskGetTickCount(); g_calendar_dirty = true; g_summary_dirty = true;
-                if (Lvgl_lock(100)) { weather_almanac_screen_hide(); sync_screen_hide(); Lvgl_unlock(); }
+                if (Lvgl_lock(100)) { weather_almanac_screen_hide(); ai_usage_screen_hide(); sync_screen_hide(); Lvgl_unlock(); }
                 net_scheduler_request(NET_JOB_WORKTIME);
                 ESP_LOGI(TAG, "KEY long press -> calendar browse %s", g_calendar_mode ? "on" : "off");
                 audio_service_cue(AUDIO_CUE_KEY_TOGGLE);
@@ -608,7 +607,7 @@ static void button_task(void *arg) {
                     Lvgl_unlock();
                 }
                 audio_service_cue(AUDIO_CUE_KEY);
-            } else if (racebox_service_state() != RACEBOX_IDLE &&
+            } else if (g_cfg.racebox_enabled && racebox_service_state() != RACEBOX_IDLE &&
                        racebox_service_state() != RACEBOX_DONE &&
                        racebox_service_state() != RACEBOX_FAILED) {
                 if (Lvgl_lock(100)) {
@@ -619,11 +618,11 @@ static void button_task(void *arg) {
                 ESP_LOGI(TAG, "KEY click -> toggle sync panel");
                 /* 同步中短按只是收起/展开弹窗，与"强制结束"区分开 */
                 audio_service_cue(AUDIO_CUE_KEY_TOGGLE);
-            } else if (sync_screen_visible()) {
+            } else if (g_cfg.racebox_enabled && sync_screen_visible()) {
                 if (Lvgl_lock(100)) { sync_screen_hide(); Lvgl_unlock(); }
                 ESP_LOGI(TAG, "KEY click -> dismiss sync summary");
                 audio_service_cue(AUDIO_CUE_KEY);
-            } else {
+            } else if (g_cfg.racebox_enabled) {
                 ESP_LOGI(TAG, "KEY click -> racebox trigger");
                 racebox_service_trigger();
                 if (Lvgl_lock(100)) {
@@ -631,6 +630,15 @@ static void button_task(void *arg) {
                     sync_screen_show();
                     Lvgl_unlock();
                 }
+            } else if (Lvgl_lock(100)) {
+                if (ai_usage_screen_visible()) ai_usage_screen_hide();
+                else {
+                    weather_almanac_screen_hide();
+                    ai_usage_screen_update(g_ai, g_ai_count);
+                    ai_usage_screen_show();
+                }
+                Lvgl_unlock();
+                audio_service_cue(AUDIO_CUE_KEY);
             }
         }
 
@@ -665,6 +673,7 @@ static void button_task(void *arg) {
                 if (weather_almanac_screen_visible()) {
                     weather_almanac_screen_hide();
                 } else {
+                    ai_usage_screen_hide();
                     sync_screen_hide();
                     weather_almanac_screen_update(&g_weather_detail);
                     weather_almanac_screen_show();
@@ -713,6 +722,7 @@ extern "C" void app_main(void) {
 
     racebox_service_init(g_cfg.racebox_upload_topic, g_cfg.racebox_auto_erase,
                          g_cfg.racebox_device_name, g_cfg.racebox_device_lock);
+    racebox_service_set_enabled(g_cfg.racebox_enabled);
     audio_service_init();
     /* 普通操作音量跟随后台配置；之后网页保存会再次热更新。
      * 只有小智 TTS 用独立的“智能语音音量”。 */
@@ -738,6 +748,8 @@ extern "C" void app_main(void) {
         main_screen_init(LCD_WIDTH, LCD_HEIGHT);
         sync_screen_init(LCD_WIDTH, LCD_HEIGHT);
         weather_almanac_screen_init(LCD_WIDTH, LCD_HEIGHT);
+        ai_usage_screen_init(LCD_WIDTH, LCD_HEIGHT);
+        main_screen_set_racebox_enabled(g_cfg.racebox_enabled);
         voice_screen_init(LCD_WIDTH, LCD_HEIGHT);
         Lvgl_unlock();
     }

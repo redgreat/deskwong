@@ -216,6 +216,9 @@ New-Item -ItemType Directory -Force -Path $uiOut | Out-Null
 & $uiExe (Join-Path $uiOut "battery-low.pgm") 9 low
 & $uiExe (Join-Path $uiOut "voice-off.pgm") 9 voice-off
 & $uiExe (Join-Path $uiOut "ap-voice.pgm") 9 ap-voice
+& $uiExe (Join-Path $uiOut "ai-dual.pgm") 9 ai-dual
+& $uiExe (Join-Path $uiOut "ai-page.pgm") 9 ai-page
+& $uiExe (Join-Path $uiOut "ai-page-dual.pgm") 9 ai-page-dual
 if ($LASTEXITCODE) { throw "UI preview rendering failed" }
 $statusCheck = Join-Path $uiSource "status_bar_check.py"
 foreach ($state in @("battery-full", "battery-low", "normal", "empty", "voice-ok", "voice-off", "ap-voice")) {

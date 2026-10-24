@@ -26,8 +26,6 @@ var version = "dev"
 
 const (
 	codexUsageURL = "https://chatgpt.com/backend-api/wham/usage"
-	// ChatGPT 额度接口很敏感，缓存一份避免设备频繁刷新被打
-	aiCacheTTL = 60 * time.Second
 )
 
 type Config struct {
@@ -50,6 +48,9 @@ type Config struct {
 			TimeoutSec int    `yaml:"timeout_sec" json:"timeout_sec"`
 		} `yaml:"pingcode" json:"pingcode"`
 	} `yaml:"worktime" json:"worktime"`
+	AIUsage struct {
+		Providers []AIProviderConfig `yaml:"providers" json:"providers"`
+	} `yaml:"ai_usage" json:"ai_usage"`
 	Log struct {
 		Level  string `yaml:"level" json:"level"`
 		Format string `yaml:"format" json:"format"`
@@ -57,14 +58,21 @@ type Config struct {
 }
 
 type App struct {
-	cfg      Config
-	settings *SettingsStore
-	restart  func()
-	client   *http.Client
+	cfg        Config
+	settings   *SettingsStore
+	restart    func()
+	client     *http.Client
+	settingsMu sync.Mutex
 
-	aiMu      sync.Mutex
-	aiCached  []byte
-	aiCacheAt time.Time
+	aiMu        sync.RWMutex
+	aiApps      map[string]AIApp
+	aiCancel    context.CancelFunc
+	aiAuthMu    sync.Mutex
+	mimoSession struct {
+		AccessToken  string
+		RefreshToken string
+		ExpiresAt    time.Time
+	}
 
 	// 节假日年历缓存：按年份缓存 timor.tech 整年数据，按天区分放假/调休。
 	// 缓存最多保留 7 天，到期自动重拉；重拉失败保留旧缓存并告警。
@@ -198,6 +206,7 @@ func loadConfig(path string) (Config, error) {
 	if cfg.Server.Listen == "" {
 		cfg.Server.Listen = ":8000"
 	}
+	normalizeAIConfig(&cfg)
 	return cfg, nil
 }
 
@@ -565,37 +574,6 @@ func fetchCodexUsage(ctx context.Context, client *http.Client) ([]byte, error) {
 	return out, nil
 }
 
-// GET /ai/usage
-// 优先代理 DESKWONG_AI_UPSTREAM（自建适配器）；否则直接抓 ChatGPT/Codex 额度。
-func (a *App) aiUsage(w http.ResponseWriter, r *http.Request) {
-	if upstream := os.Getenv("DESKWONG_AI_UPSTREAM"); upstream != "" {
-		if a.proxyJSON(w, r, upstream) {
-			return
-		}
-	}
-	a.aiMu.Lock()
-	defer a.aiMu.Unlock()
-	if a.client == nil {
-		jsonReply(w, http.StatusServiceUnavailable, map[string]any{"code": 2005, "message": "http client not initialized"})
-		return
-	}
-	if a.aiCached != nil && time.Since(a.aiCacheAt) < aiCacheTTL {
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		_, _ = w.Write(a.aiCached)
-		return
-	}
-	body, err := fetchCodexUsage(r.Context(), a.client)
-	if err != nil {
-		slog.Warn("codex usage fetch failed", "error", err)
-		jsonReply(w, http.StatusServiceUnavailable, map[string]any{"code": 2005, "message": err.Error()})
-		return
-	}
-	a.aiCached = body
-	a.aiCacheAt = time.Now()
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_, _ = w.Write(body)
-}
-
 // GET /almanac?date=YYYY-MM-DD
 // 黄历宜忌：内置 lunar 算法（github.com/6tail/lunar-go）本地计算，无第三方
 // 依赖、无配额。设备端解析兼容 {data:{yi,ji}}，date 缺省取服务器当日。
@@ -701,6 +679,8 @@ func runService(parent context.Context, cfg Config, store *SettingsStore) error 
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	app := &App{cfg: cfg, settings: store, restart: cancel, client: &http.Client{Timeout: 12 * time.Second}}
+	app.startAIScheduler(ctx)
+	defer app.stopAIScheduler()
 
 	mux := http.NewServeMux()
 	app.registerAdmin(mux)

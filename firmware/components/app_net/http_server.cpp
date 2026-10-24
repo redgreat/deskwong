@@ -158,6 +158,7 @@ static esp_err_t config_get_handler(httpd_req_t *req) {
     cJSON_AddStringToObject(d, "racebox_upload_topic", stored.racebox_upload_topic);
     cJSON_AddStringToObject(d, "racebox_device_name", stored.racebox_device_name);
     cJSON_AddStringToObject(d, "racebox_device_lock", stored.racebox_device_lock);
+    cJSON_AddBoolToObject(d, "racebox_enabled", stored.racebox_enabled);
     cJSON_AddBoolToObject(d, "racebox_auto_erase", stored.racebox_auto_erase);
     cJSON_AddNumberToObject(d, "remind_signin_hh", stored.remind_signin_hh);
     cJSON_AddNumberToObject(d, "remind_signin_mm", stored.remind_signin_mm);
@@ -296,6 +297,8 @@ static esp_err_t config_put_handler(httpd_req_t *req) {
     set_str_field(j, "racebox_upload_topic", pending.racebox_upload_topic, sizeof(pending.racebox_upload_topic));
     set_str_field(j, "racebox_device_name", pending.racebox_device_name, sizeof(pending.racebox_device_name));
     set_str_field(j, "racebox_device_lock", pending.racebox_device_lock, sizeof(pending.racebox_device_lock));
+    it = cJSON_GetObjectItem(j, "racebox_enabled");
+    if (it && cJSON_IsBool(it)) pending.racebox_enabled = cJSON_IsTrue(it);
     it = cJSON_GetObjectItem(j, "racebox_auto_erase");
     if (it && cJSON_IsBool(it)) pending.racebox_auto_erase = cJSON_IsTrue(it);
     set_str_field(j, "mqtt_user", pending.mqtt_user, sizeof(pending.mqtt_user));
@@ -392,6 +395,7 @@ static esp_err_t config_put_handler(httpd_req_t *req) {
      * 否则"上传后清除内存"开关打开后要等到下次重启才起作用，同步后不会清理。 */
     racebox_service_reconfigure(pending.racebox_upload_topic, pending.racebox_auto_erase,
                                 pending.racebox_device_name, pending.racebox_device_lock);
+    racebox_service_set_enabled(pending.racebox_enabled);
     if (pending.mqtt_broker[0]) {
         char msg[224];
         snprintf(msg, sizeof(msg), "配置已保存，RaceBox 设置立即生效；MQTT 连接重启后切换：%s",

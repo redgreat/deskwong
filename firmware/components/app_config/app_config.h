@@ -47,6 +47,7 @@ typedef struct {
     char racebox_upload_topic[96];
     char racebox_device_name[64];   // 蓝牙设备名前缀（留空时用默认 "RaceBox"）
     char racebox_device_lock[64];   // 锁定唯一设备名/地址，非空时只连这一台
+    bool racebox_enabled;           // RaceBox 设备同步总开关，默认开启
     bool racebox_auto_erase;
     /* 提醒（本地屏显 + 一声提示音） */
     uint8_t remind_signin_hh;             // 08

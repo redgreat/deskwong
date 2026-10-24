@@ -92,6 +92,9 @@ func cryptConfig(cfg Config, c *settingsCipher, encrypt bool) (Config, error) {
 		&cfg.Context.ReportToken, &cfg.Context.ReadToken,
 		&cfg.Worktime.PingCode.Password,
 	}
+	for i := range cfg.AIUsage.Providers {
+		fields = append(fields, &cfg.AIUsage.Providers[i].Password, &cfg.AIUsage.Providers[i].APIToken, &cfg.AIUsage.Providers[i].RefreshToken)
+	}
 	for _, field := range fields {
 		var err error
 		if encrypt {

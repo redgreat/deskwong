@@ -1,0 +1,10 @@
+services:
+  deskwong-service:
+    environment:
+      DESKWONG_DEVIN_CREDENTIALS_FILE: /home/nonroot/.local/share/devin/credentials.toml
+      DESKWONG_DEVIN_STATE_DB: /home/nonroot/.config/Devin/User/globalStorage/state.vscdb
+      DESKWONG_MIMO_AUTH_FILE: /home/nonroot/.local/share/mimocode/auth.json
+    volumes:
+      - ${DESKWONG_DEVIN_CREDENTIALS_DIR}:/home/nonroot/.local/share/devin:ro
+      - ${DESKWONG_DEVIN_STATE_DIR}:/home/nonroot/.config/Devin/User/globalStorage:ro
+      - ${DESKWONG_MIMO_AUTH_DIR}:/home/nonroot/.local/share/mimocode:ro

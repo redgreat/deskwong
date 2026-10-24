@@ -31,10 +31,11 @@ XiaoZhi context provider ─HTTPS GET + device-id─> service ─> prompt dynami
 - WakeNet 监听任务独占模型阈值写入；检测到后台保存的 `voice_wake_threshold` 变化时在同一任务内热更新并回读实际值，无需重启或跨任务并发调用模型接口。
 - 工时按月经 NVS 缓存（`deskwong` 命名空间的 `wt_YYYYMM` 快照）：开机先显示缓存或本地应收工时，网络任务返回后覆盖，拉取失败保留旧值，主屏不出现 `--`；缓存写入由内部 RAM 栈的小任务完成，避免 flash cache 关闭时访问 PSRAM 栈。主屏“已记/应记”与百分比按当前月的已过法定工作日 ×8 小时折算（`holiday_workdays_upto` + `worktime_expected_hours_elapsed`），翻页浏览其他月份时用整月口径；小智上下文快照使用同一折算值。
 - 企微签到/签退、工时记录提醒条由 UI 任务维护停留计时：到达 `remind_sign_hold_seconds` / `remind_worktime_hold_seconds`（默认 300 秒）自动隐藏，与天气黄历弹窗、日历翻页的自动返回并列；`KEY` 短按仍可立即关闭。
-- `main_screen.cpp` 是主屏布局唯一实现；`sync_screen.cpp` 是 RaceBox 同步覆盖层。
+- `main_screen.cpp` 是主屏布局唯一实现；`sync_screen.cpp` 是 RaceBox 同步覆盖层；新增 `ai_usage_screen.cpp` 作为 AI 用量覆盖层，复用天气黄历覆盖层的 380×264 面板、共享样式和轻量绘制策略，避免与主屏同时创建大量标签耗尽 128KB LVGL 池。
 - `weather_almanac_screen.cpp` 是天气黄历覆盖层：共享 RaceBox 弹窗的黑白卡片视觉语言，显示今天起 7 天、当前起 7 个小时和当天宜忌；温度与日期/小时由四个轻量文本行对象绘制，每列按字库实际像素宽度独立居中，避免双行标签在实屏上产生左对齐错觉，同时控制 128KB LVGL 对象池占用。按键任务维护主屏、日历翻页和天气黄历三种界面状态。
 - 显示内部使用 RGB565，flush 时阈值化为 1-bit 单色；非 8 像素宽图片按行补齐字节。
 - RaceBox 当前使用 64 条左右的小型 PSRAM 流式缓存，按 MQTT PUBACK 释放；RBX2 支持轨迹分段和稳定幂等键。
+- `racebox_enabled` 属于固件/开发板 Web 配置，不属于服务端 `/admin`：关闭时 RaceBox 服务入口、按键路由、顶栏对象和上下文字段共同停用，但配置与历史数据保留。按键任务根据该能力开关在 RaceBox 同步入口和 AI 用量页入口之间切换，为以后增加其他外接设备同步保留扩展点。
 - 语音上下文不直接从语音回调读取各业务组件，也不让公网服务回连设备。主任务从已经展示/持久化的工时、AI、天气黄历和 RaceBox 当日计数生成轻量快照，通过网络调度器合并上报；上报失败只保留待发送标志，不影响语音、UI 或原业务刷新。
 
 ## 3. Web 配置后台
@@ -53,7 +54,7 @@ XiaoZhi context provider ─HTTPS GET + device-id─> service ─> prompt dynami
 - 敏感字段在 SQLite 中用 AES-256-GCM 加密；优先使用 `DESKWONG_SETTINGS_KEY`，否则生成同目录 0600 密钥文件。
 - 工时源优先级：`DESKWONG_WORKTIME_UPSTREAM` → PingCode 网页 API → MySQL 兼容查询。
 - PingCode 登录令牌仅驻留内存；按月份分页拉取 `workload-logs/mine` 并按 `register_date` 聚合 `man_hour`。
-- AI 用量可代理上游，或读取 Codex 登录凭据并归一化为设备契约。
+- AI 用量由同一 Go 服务容器的 provider adapter 层归一化：ChatGPT 读取 Codex auth；Devin 读取 CLI TOML 或 Desktop `state.vscdb` 并调用 Connect RPC，也支持 Web Bearer；MiMo 可读取 Desktop OAuth，也可由 Linux 容器直接持有加密 Refresh Token并调用官方 `/user/usage`，轮换凭据在 SQLite 设置写锁内持久化；Claude Code 暂接外部 API。统一输出 `apps[].windows[]`。服务端 `/admin` 保存最多两个启用应用、顺序、认证方式和各自刷新频率；调度器只实例化启用项，取消选择即停止后续轮询。固件只渲染归一化结果，不持有凭据。旧 `providers` 平铺响应仅作 ChatGPT 兼容输入。
 - 服务保存按 `device-id` 隔离的最新开发板上下文快照，并提供小智上下文源 GET 接口。GET 只读本地快照，不同步扇出外部依赖，保证唤醒 Prompt 构建延迟稳定；上报鉴权和上下文读取鉴权使用独立用途的 Bearer Token。
 
 ## 5. 构建与发布

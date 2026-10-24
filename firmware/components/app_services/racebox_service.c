@@ -37,6 +37,7 @@ typedef struct racebox_session {
 
 static const char *TAG = "racebox";
 static volatile racebox_state_t s_state = RACEBOX_IDLE;
+static volatile bool s_enabled = true;
 static int s_point_count = 0;
 static bool s_synced_today = false;
 static bool s_auto_erase = false;
@@ -663,6 +664,7 @@ static void daily_save_worker(void *arg) {
 }
 
 void racebox_service_day_tick(int year, int month, int day) {
+    if (!s_enabled) return;
     if (year < 2025) return;
     int date=year*10000+month*100+day;
     s_today=date;
@@ -715,7 +717,24 @@ void racebox_service_reconfigure(const char *upload_topic, bool auto_erase,
              device_prefix ? device_prefix : "", device_lock ? device_lock : "");
 }
 
+void racebox_service_set_enabled(bool enabled) {
+    if (s_enabled == enabled) return;
+    s_enabled = enabled;
+    if (!enabled) {
+        s_cancel_upload = true;
+        racebox_ble_stop();
+        free_record_chunks();
+        free_sessions();
+        s_state = RACEBOX_IDLE;
+        s_sound = RB_SND_NONE;
+        set_message("RaceBox 已停用");
+    }
+}
+
+bool racebox_service_enabled(void) { return s_enabled; }
+
 void racebox_service_trigger(void) {
+    if (!s_enabled) return;
     if (s_state != RACEBOX_IDLE && s_state != RACEBOX_DONE && s_state != RACEBOX_FAILED) {
         ESP_LOGW(TAG, "busy, state=%d", s_state);
         return;

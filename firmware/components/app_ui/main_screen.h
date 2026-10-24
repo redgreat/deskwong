@@ -26,6 +26,7 @@ typedef struct {
 void main_screen_init(int width, int height);
 /* 日历翻页模式：顶栏定位数量右侧显示迷你日历图标 */
 void main_screen_set_calendar_mode(bool on);
+void main_screen_set_racebox_enabled(bool enabled);
 void main_screen_update_time(const char *date, const char *time, const char *week, const char *lunar);
 /* cells uses Monday as the first column. */
 void main_screen_update_calendar(const calendar_cell_t cells[42]);
@@ -34,7 +35,7 @@ void main_screen_update_status(const char *status);
 /* 联网状态：未联网时状态栏显示可访问的后台地址，并隐藏 RaceBox 图标腾出空间 */
 void main_screen_update_net(bool connected, const char *ip);
 void main_screen_update_summary(float recorded, float expected, const char *weather, int weather_icon,
-                                const char *lunar, const ai_provider_t *ai5h, const ai_provider_t *aiweek,
+                                const char *lunar, const ai_provider_t *ai, int ai_count,
                                 bool racebox_synced, int racebox_points,
                                 float indoor_temp, float indoor_humidity);
 void main_screen_show_remind(const char *msg);

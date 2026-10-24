@@ -1,6 +1,7 @@
 #include "lvgl.h"
 #include "main_screen.h"
 #include "ui_fonts.h"
+#include "ai_provider_icons.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -55,14 +56,16 @@ static const lv_img_dsc_t s_voice_icon_dsc = {
 /* 工时摘要：数字行（已记/应记）+ 下方细条，右侧百分比胶囊。
  * 数字用 digits_18（与日期格一致），百分比用反白圆角胶囊（与状态栏 IP 胶囊呼应）。 */
 static lv_obj_t *s_total_num, *s_total_capsule, *s_total_pct_text;
-static lv_obj_t *s_lunar_full, *s_weather, *s_temperature, *s_humidity, *s_weather_image, *s_voice_conn, *s_ai[2], *s_remind;
+static lv_obj_t *s_lunar_full, *s_weather, *s_temperature, *s_humidity, *s_weather_image, *s_voice_conn, *s_ai[4], *s_remind;
 static lv_obj_t *s_cell[42], *s_day[42], *s_lunar[42], *s_track[42], *s_fill[42];
-static lv_obj_t *s_summary_fill, *s_ai_fill[2];
+static lv_obj_t *s_summary_fill, *s_ai_fill[4];
+static lv_obj_t *s_ai_icon[2], *s_ai_window[4];
 /* 状态栏：离线时显示的后台地址胶囊、RaceBox 图标 */
 static lv_obj_t *s_ip, *s_race_img;
 /* 温度：数字 + 自绘的「°」圆圈 + 湿度 */
 static lv_obj_t *s_degree_out, *s_indoor_temp, *s_degree_in, *s_indoor_humi;
 static bool s_offline = false;
+static bool s_racebox_enabled = true;
 static volatile bool s_remind_visible = false;
 static int s_grid_height;
 static const uint8_t s_racebox_alpha[] = {
@@ -71,13 +74,6 @@ static const uint8_t s_racebox_alpha[] = {
 static const lv_img_dsc_t s_racebox_img = {
     .header = {.cf = LV_IMG_CF_ALPHA_1BIT, .always_zero = 0, .reserved = 0, .w = 32, .h = 24},
     .data_size = sizeof(s_racebox_alpha), .data = s_racebox_alpha
-};
-static const uint8_t s_chatgpt_alpha[] = {
-#include "chatgpt_logo_alpha.inc"
-};
-static const lv_img_dsc_t s_chatgpt_img = {
-    .header = {.cf = LV_IMG_CF_ALPHA_1BIT, .always_zero = 0, .reserved = 0, .w = 24, .h = 24},
-    .data_size = sizeof(s_chatgpt_alpha), .data = s_chatgpt_alpha
 };
 
 #include "weather_icons.inc"
@@ -189,7 +185,7 @@ static void set_meter(lv_obj_t *fill, float percent, int width) {
     if (pixels) lv_obj_clear_flag(fill, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(fill, LV_OBJ_FLAG_HIDDEN);
 }
-static void update_quota(int index, const ai_provider_t *quota) {
+static void update_quota(int index, const ai_provider_t *quota, int bar_width) {
     char text[32];
     if (quota && quota->resets_at > 0) {
         time_t reset = (time_t)quota->resets_at;
@@ -199,7 +195,7 @@ static void update_quota(int index, const ai_provider_t *quota) {
 #else
         bool converted = localtime_r(&reset, &local) != NULL;
 #endif
-        if (converted && index == 1) {
+        if (converted && (quota->window_minutes == 10080 || strstr(quota->id, "weekly"))) {
             time_t now = time(NULL);
             struct tm today = {};
 #ifdef _WIN32
@@ -213,11 +209,76 @@ static void update_quota(int index, const ai_provider_t *quota) {
         } else if (converted) {
             strftime(text, sizeof(text), "%H:%M", &local);
         } else {
-            strcpy(text, index == 0 ? "--:--" : "--/--");
+            strcpy(text, "--");
         }
-    } else strcpy(text, index == 0 ? "--:--" : "--/--");
+    } else strcpy(text, "--");
     text_changed(s_ai[index], text);
-    set_meter(s_ai_fill[index], quota ? quota->remaining_percent : 0, 79);
+    set_meter(s_ai_fill[index], quota ? quota->remaining_percent : 0, bar_width);
+}
+
+static void set_ai_object_visible(lv_obj_t *obj, bool visible) {
+    if (visible) lv_obj_clear_flag(obj, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(obj, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void update_ai_layout(const ai_provider_t *ai, int count) {
+    int windows[2][2] = {{-1, -1}, {-1, -1}};
+    int app_count = 0, per_app[2] = {0, 0};
+    const char *ids[2] = {NULL, NULL};
+    for (int i = 0; i < count; ++i) {
+        const char *id = ai[i].app_id[0] ? ai[i].app_id : "chatgpt";
+        int app = -1;
+        for (int j = 0; j < app_count; ++j) if (!strcmp(ids[j], id)) app = j;
+        if (app < 0) {
+            if (app_count >= 2) continue;
+            app = app_count++; ids[app] = id;
+        }
+        if (per_app[app] < 2) windows[app][per_app[app]++] = i;
+    }
+    if (app_count <= 1) {
+        const char *id = app_count ? ids[0] : "chatgpt";
+        lv_img_set_src(s_ai_icon[0], ai_provider_icon(id, 24));
+        lv_obj_set_pos(s_ai_icon[0], 326, 205);
+        set_ai_object_visible(s_ai_icon[0], true);
+        set_ai_object_visible(s_ai_icon[1], false);
+        for (int i = 0; i < 2; ++i) {
+            int index = app_count ? windows[0][i] : -1;
+            lv_obj_set_pos(s_ai_window[i], 315, i ? 270 : 235);
+            lv_obj_set_pos(s_ai[i], 350, i ? 267 : 232);
+            lv_obj_set_pos(lv_obj_get_parent(s_ai_fill[i]), 315, i ? 289 : 252);
+            lv_obj_set_size(lv_obj_get_parent(s_ai_fill[i]), 79, 5);
+            lv_obj_set_height(s_ai_fill[i], 5);
+            text_changed(s_ai_window[i], index >= 0 && ai[index].label[0] ? ai[index].label : (i ? "每周" : "5小时"));
+            update_quota(i, index >= 0 ? &ai[index] : NULL, 79);
+            set_ai_object_visible(s_ai_window[i], true); set_ai_object_visible(s_ai[i], true);
+            set_ai_object_visible(lv_obj_get_parent(s_ai_fill[i]), true);
+        }
+        for (int i = 2; i < 4; ++i) {
+            set_ai_object_visible(s_ai_window[i], false); set_ai_object_visible(s_ai[i], false);
+            set_ai_object_visible(lv_obj_get_parent(s_ai_fill[i]), false);
+        }
+        return;
+    }
+    for (int app = 0; app < 2; ++app) {
+        int base_y = app ? 250 : 205;
+        lv_img_set_src(s_ai_icon[app], ai_provider_icon(ids[app], 16));
+        lv_obj_set_pos(s_ai_icon[app], 315, base_y);
+        set_ai_object_visible(s_ai_icon[app], true);
+        for (int win = 0; win < 2; ++win) {
+            int slot = app * 2 + win, index = windows[app][win];
+            int y = base_y + win * 20;
+            lv_obj_set_pos(s_ai_window[slot], 335, y);
+            lv_obj_set_pos(s_ai[slot], 354, y - 3);
+            lv_obj_set_width(s_ai[slot], 41);
+            lv_obj_set_pos(lv_obj_get_parent(s_ai_fill[slot]), 335, y + 14);
+            lv_obj_set_size(lv_obj_get_parent(s_ai_fill[slot]), 59, 3);
+            lv_obj_set_height(s_ai_fill[slot], 3);
+            text_changed(s_ai_window[slot], index >= 0 && ai[index].label[0] ? ai[index].label : "--");
+            update_quota(slot, index >= 0 ? &ai[index] : NULL, 59);
+            set_ai_object_visible(s_ai_window[slot], true); set_ai_object_visible(s_ai[slot], true);
+            set_ai_object_visible(lv_obj_get_parent(s_ai_fill[slot]), true);
+        }
+    }
 }
 /* 自绘的摄氏度「°」小圆圈：单色屏上比字符更清晰，且不依赖字库是否含 ° */
 static lv_obj_t *degree_mark(lv_obj_t *p, int size, int border) {
@@ -379,20 +440,28 @@ void main_screen_init(int width, int height) {
     lv_obj_set_pos(s_degree_in, 370, 169);
     s_indoor_humi = label(scr, "--%", &lv_font_zh_10, 375, 176);
     dotted(scr, 315, 201, 80);
-    /* ChatGPT 图标 + 「额度」整体居中：24(图标)+6(间距)+28(文字)=58，居中于 80 宽的列 */
-    lv_obj_t *chatgpt = lv_img_create(scr);
-    lv_img_set_src(chatgpt, &s_chatgpt_img); lv_obj_set_pos(chatgpt, 326, 205);
-    lv_obj_set_style_img_recolor(chatgpt, lv_color_black(), 0);
-    lv_obj_set_style_img_recolor_opa(chatgpt, LV_OPA_COVER, 0);
-    label(scr, "额度", &lv_font_zh_14, 356, 209);
-    label(scr, "5小时", &lv_font_zh_10, 315, 235);
-    s_ai[0] = label(scr, "--:--", &lv_font_zh_14, 350, 232, 45);
-    lv_obj_set_style_text_align(s_ai[0], LV_TEXT_ALIGN_LEFT, 0);
-    meter(scr, 315, 252, 79, 5, &s_ai_fill[0]);
-    label(scr, "每周", &lv_font_zh_10, 315, 270);
-    s_ai[1] = label(scr, "--/--", &lv_font_zh_14, 350, 267, 45);
-    lv_obj_set_style_text_align(s_ai[1], LV_TEXT_ALIGN_LEFT, 0);
-    meter(scr, 315, 289, 79, 5, &s_ai_fill[1]);
+    /* AI 区预建两套共享对象：单应用沿用原大卡坐标；双应用时把四个窗口压成两组。 */
+    for (int app = 0; app < 2; ++app) {
+        s_ai_icon[app] = lv_img_create(scr);
+        lv_obj_remove_style_all(s_ai_icon[app]);
+        lv_img_set_src(s_ai_icon[app], ai_provider_icon("chatgpt", app ? 16 : 24));
+        lv_obj_set_style_img_recolor(s_ai_icon[app], lv_color_black(), 0);
+        lv_obj_set_style_img_recolor_opa(s_ai_icon[app], LV_OPA_COVER, 0);
+    }
+    const int wy[4] = {235, 270, 216, 260};
+    for (int i = 0; i < 4; ++i) {
+        s_ai_window[i] = label(scr, i % 2 ? "周" : "5时", &lv_font_zh_10, 315, wy[i]);
+        s_ai[i] = label(scr, "--", &lv_font_zh_14, 350, wy[i] - 3, 45);
+        lv_obj_set_style_text_align(s_ai[i], LV_TEXT_ALIGN_LEFT, 0);
+        meter(scr, 315, wy[i] + 17, 79, i < 2 ? 5 : 3, &s_ai_fill[i]);
+        if (i >= 2) {
+            lv_obj_add_flag(s_ai_window[i], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(s_ai[i], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(lv_obj_get_parent(s_ai_fill[i]), LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    lv_obj_set_pos(s_ai_icon[0], 326, 205);
+    lv_obj_add_flag(s_ai_icon[1], LV_OBJ_FLAG_HIDDEN);
     s_remind = label(scr, "", &lv_font_zh_14, 7, height-25, width-14);
     lv_obj_set_style_bg_color(s_remind, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(s_remind, LV_OPA_COVER, 0);
@@ -403,8 +472,22 @@ void main_screen_init(int width, int height) {
 /* 日历翻页模式指示：顶栏迷你日历图标显隐 */
 void main_screen_set_calendar_mode(bool on) {
     if (!s_cal_icon) return;
+    if (!s_racebox_enabled) lv_obj_set_pos(s_cal_icon, 125, 9);
+    else lv_obj_align_to(s_cal_icon, s_points, LV_ALIGN_OUT_RIGHT_MID, 4, 0);
     if (on) lv_obj_clear_flag(s_cal_icon, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(s_cal_icon, LV_OBJ_FLAG_HIDDEN);
+}
+
+void main_screen_set_racebox_enabled(bool enabled) {
+    s_racebox_enabled = enabled;
+    if (!enabled || s_offline) {
+        lv_obj_add_flag(s_race_img, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_points, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_race_check, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_clear_flag(s_race_img, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(s_points, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 void main_screen_update_time(const char *date, const char *time, const char *week, const char *lunar) {    (void)week;
@@ -452,7 +535,7 @@ void main_screen_update_calendar(const calendar_cell_t cells[42]) {
     }
 }
 void main_screen_update_summary(float recorded, float expected, const char *weather, int weather_icon, const char *lunar,
-                                const ai_provider_t *ai5h, const ai_provider_t *aiweek, bool synced, int points,
+                                const ai_provider_t *ai, int ai_count, bool synced, int points,
                                 float indoor_temp, float indoor_humidity) {
     char b[96];
     /* 本月工时：没有记录就是 0，没拿到"应记录"也不显示 --。
@@ -467,14 +550,14 @@ void main_screen_update_summary(float recorded, float expected, const char *weat
     snprintf(b, sizeof(b), "%.0f%%", percent);
     capsule_refresh(s_total_capsule, s_total_pct_text, b, 299, 20);
     set_meter(s_summary_fill, percent, 119);
-    if (synced && !s_offline) lv_obj_clear_flag(s_race_check, LV_OBJ_FLAG_HIDDEN);
+    if (s_racebox_enabled && synced && !s_offline) lv_obj_clear_flag(s_race_check, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(s_race_check, LV_OBJ_FLAG_HIDDEN);
     if (points >= 1000000) snprintf(b, sizeof(b), LV_SYMBOL_GPS " %.1fM", points/1000000.0f);
     else if (points >= 1000) snprintf(b, sizeof(b), LV_SYMBOL_GPS " %.1fk", points/1000.0f);
     else snprintf(b, sizeof(b), LV_SYMBOL_GPS " %d", points < 0 ? 0 : points);
     text_changed(s_points, b);
     /* 定位数变化后胶囊宽度会变，日历指示图标跟着重对齐 */
-    lv_obj_align_to(s_cal_icon, s_points, LV_ALIGN_OUT_RIGHT_MID, 4, 0);
+    if (s_racebox_enabled) lv_obj_align_to(s_cal_icon, s_points, LV_ALIGN_OUT_RIGHT_MID, 4, 0);
     set_lunar(lunar);
     const char *newline = weather ? strchr(weather, '\n') : NULL;
     int temperature = 0, humidity = 0;
@@ -515,8 +598,7 @@ void main_screen_update_summary(float recorded, float expected, const char *weat
     lv_obj_set_y(s_indoor_humi, 189 - lv_obj_get_height(s_indoor_humi));
     /* 湿度紧跟在上标后面，不再贴着右侧边缘。 */
     lv_obj_set_x(s_indoor_humi, degree_x + 9);
-    update_quota(0, ai5h);
-    update_quota(1, aiweek);
+    update_ai_layout(ai, ai_count);
 }
 
 void main_screen_update_net(bool connected, const char *ip) {
@@ -533,8 +615,10 @@ void main_screen_update_net(bool connected, const char *ip) {
         lv_obj_add_flag(s_race_check, LV_OBJ_FLAG_HIDDEN);
     } else {
         lv_obj_add_flag(s_ip, LV_OBJ_FLAG_HIDDEN);
-        if (s_race_img) lv_obj_clear_flag(s_race_img, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_clear_flag(s_points, LV_OBJ_FLAG_HIDDEN);
+        if (s_racebox_enabled) {
+            if (s_race_img) lv_obj_clear_flag(s_race_img, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(s_points, LV_OBJ_FLAG_HIDDEN);
+        }
     }
 }
 void main_screen_update_bottom(const char *info) { (void)info; }

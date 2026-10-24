@@ -9,6 +9,10 @@ extern "C" {
 
 typedef struct {
     char id[16];
+    char app_id[16];
+    char app_name[16];
+    char app_status[16];
+    int64_t observed_at;       // application sample time, Unix seconds
     char name[32];
     char label[32];
     char display[32];

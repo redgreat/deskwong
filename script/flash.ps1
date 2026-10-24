@@ -24,9 +24,13 @@ $env:PYTHONIOENCODING = "utf-8"
 # 关键：Git Bash / ZCode 等 MSYS 系终端启动的 PowerShell 会带上 MSYSTEM，
 # idf.py 检测到 MSYSTEM 只打印 "MSys/Mingw is no longer supported" 就静默
 # 退出（exit 0），build/flash 全部不执行。必须在调用前删掉这类变量。
-Remove-Item Env:MSYSTEM           -ErrorAction SilentlyContinue
-Remove-Item Env:MSYS2_PATH_TYPE   -ErrorAction SilentlyContinue
-Remove-Item Env:SHELL             -ErrorAction SilentlyContinue
+# 必须先判断存在再删：这些变量在非 MSYS 终端里本就不存在，直接 Remove-Item
+# 会被环境的 safe-delete 守卫判定 "path-not-found" 而 fail-closed 终止整个脚本。
+foreach ($v in @('MSYSTEM', 'MSYS2_PATH_TYPE', 'SHELL')) {
+    if (Test-Path "Env:$v") {
+        Remove-Item "Env:$v" -ErrorAction SilentlyContinue
+    }
+}
 
 # 首次配置（或 build/ 被删除后重新全量配置）时，CMake 需要从 PATH 找到交叉编译器
 $toolchain = Get-ChildItem "$env:IDF_TOOLS_PATH\tools\xtensa-esp-elf\*\xtensa-esp-elf\bin" `

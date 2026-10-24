@@ -55,6 +55,8 @@ void racebox_service_init(const char *upload_topic, bool auto_erase,
 /* 运行中修改配置（网页保存后调用） */
 void racebox_service_reconfigure(const char *upload_topic, bool auto_erase,
                                  const char *device_prefix, const char *device_lock);
+void racebox_service_set_enabled(bool enabled);
+bool racebox_service_enabled(void);
 /* 按键触发：开始一次采集流程（BLE 下载 → 解析 → MQTT 上传 → 擦除） */
 void racebox_service_trigger(void);
 /* 取消当前扫描/连接/下载并断开 BLE。 */

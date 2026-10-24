@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -47,6 +48,7 @@ func openSettings(path string, seed Config) (*SettingsStore, error) {
 	if seed.Worktime.PingCode.TimeoutSec <= 0 {
 		seed.Worktime.PingCode.TimeoutSec = 20
 	}
+	normalizeAIConfig(&seed)
 	store := &SettingsStore{DB: db, cipher: cipher}
 	storedSeed, err := cryptConfig(seed, cipher, true)
 	if err != nil {
@@ -80,6 +82,7 @@ func openSettings(path string, seed Config) (*SettingsStore, error) {
 		db.Close()
 		return nil, err
 	}
+	normalizeAIConfig(&plainCfg)
 	if err := writeSettings(store, plainCfg); err != nil {
 		db.Close()
 		return nil, err
@@ -97,7 +100,11 @@ func readSettings(store *SettingsStore) (Config, error) {
 	if err != nil {
 		return cfg, err
 	}
-	return cryptConfig(cfg, store.cipher, false)
+	plain, err := cryptConfig(cfg, store.cipher, false)
+	if err == nil {
+		normalizeAIConfig(&plain)
+	}
+	return plain, err
 }
 
 func writeSettings(store *SettingsStore, cfg Config) error {
@@ -110,6 +117,27 @@ func writeSettings(store *SettingsStore, cfg Config) error {
 		_, err = store.Exec("UPDATE settings SET body=? WHERE id=1", string(body))
 	}
 	return err
+}
+
+func (a *App) persistAIRefreshToken(providerID, token string) error {
+	a.settingsMu.Lock()
+	defer a.settingsMu.Unlock()
+	cfg, err := readSettings(a.settings)
+	if err != nil {
+		return err
+	}
+	found := false
+	for i := range cfg.AIUsage.Providers {
+		if cfg.AIUsage.Providers[i].ID == providerID {
+			cfg.AIUsage.Providers[i].RefreshToken = token
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("AI 应用不存在: %s", providerID)
+	}
+	return writeSettings(a.settings, cfg)
 }
 
 func validateSettings(cfg Config) error {
@@ -137,7 +165,7 @@ func validateSettings(cfg Config) error {
 			return errors.New("启用 PingCode 时账号和密码不能为空")
 		}
 	}
-	return nil
+	return validateAIConfig(cfg)
 }
 
 // 管理后台用账号密码（HTTP Basic）登录；设备 Token 只能调数据接口，不能管理配置。
@@ -161,6 +189,8 @@ func (a *App) registerAdmin(mux *http.ServeMux) {
 		io.WriteString(w, adminHTML)
 	})
 	mux.HandleFunc("GET /api/settings", a.adminAuth(func(w http.ResponseWriter, r *http.Request) {
+		a.settingsMu.Lock()
+		defer a.settingsMu.Unlock()
 		cfg, err := readSettings(a.settings)
 		if err != nil {
 			jsonReply(w, 500, map[string]any{"message": "读取配置失败"})
@@ -181,9 +211,22 @@ func (a *App) registerAdmin(mux *http.ServeMux) {
 		if cfg.Worktime.PingCode.Password != "" {
 			cfg.Worktime.PingCode.Password = "******"
 		}
+		for i := range cfg.AIUsage.Providers {
+			if cfg.AIUsage.Providers[i].Password != "" {
+				cfg.AIUsage.Providers[i].Password = "******"
+			}
+			if cfg.AIUsage.Providers[i].APIToken != "" {
+				cfg.AIUsage.Providers[i].APIToken = "******"
+			}
+			if cfg.AIUsage.Providers[i].RefreshToken != "" {
+				cfg.AIUsage.Providers[i].RefreshToken = "******"
+			}
+		}
 		jsonReply(w, 200, map[string]any{"data": cfg})
 	}))
 	mux.HandleFunc("PUT /api/settings", a.adminAuth(func(w http.ResponseWriter, r *http.Request) {
+		a.settingsMu.Lock()
+		defer a.settingsMu.Unlock()
 		r.Body = http.MaxBytesReader(w, r.Body, 128*1024)
 		var cfg Config
 		dec := json.NewDecoder(r.Body)
@@ -216,6 +259,22 @@ func (a *App) registerAdmin(mux *http.ServeMux) {
 		}
 		if cfg.Worktime.PingCode.Password == "******" {
 			cfg.Worktime.PingCode.Password = old.Worktime.PingCode.Password
+		}
+		oldAI := map[string]AIProviderConfig{}
+		for _, p := range old.AIUsage.Providers {
+			oldAI[p.ID] = p
+		}
+		for i := range cfg.AIUsage.Providers {
+			previous := oldAI[cfg.AIUsage.Providers[i].ID]
+			if cfg.AIUsage.Providers[i].Password == "******" {
+				cfg.AIUsage.Providers[i].Password = previous.Password
+			}
+			if cfg.AIUsage.Providers[i].APIToken == "******" {
+				cfg.AIUsage.Providers[i].APIToken = previous.APIToken
+			}
+			if cfg.AIUsage.Providers[i].RefreshToken == "******" {
+				cfg.AIUsage.Providers[i].RefreshToken = previous.RefreshToken
+			}
 		}
 		if err = validateSettings(cfg); err != nil {
 			jsonReply(w, 400, map[string]any{"message": err.Error()})

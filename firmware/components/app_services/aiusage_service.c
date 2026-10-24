@@ -35,9 +35,41 @@ int aiusage_service_fetch(ai_provider_t *out, int max, int *count) {
     if (!j) return 1;
     cJSON *data = cJSON_GetObjectItem(j, "data");
     if (!data) { cJSON_Delete(j); return 1; }
-    cJSON *providers = cJSON_GetObjectItem(data, "providers");
     int n = 0;
-    if (providers && cJSON_IsArray(providers)) {
+    cJSON *apps = cJSON_GetObjectItem(data, "apps");
+    if (apps && cJSON_IsArray(apps)) {
+        cJSON *app;
+        cJSON_ArrayForEach(app, apps) {
+            cJSON *windows = cJSON_GetObjectItem(app, "windows");
+            cJSON *observed = cJSON_GetObjectItem(app, "observed_at");
+            if (!windows || !cJSON_IsArray(windows)) continue;
+            cJSON *window;
+            int app_windows = 0;
+            cJSON_ArrayForEach(window, windows) {
+                if (n >= max || app_windows >= 2) break;
+                memset(&out[n], 0, sizeof(out[n]));
+                out[n].remaining_percent = -1;
+                cpy(out[n].app_id, sizeof(out[n].app_id), cJSON_GetObjectItem(app, "id"));
+                cpy(out[n].app_name, sizeof(out[n].app_name), cJSON_GetObjectItem(app, "name"));
+                cpy(out[n].app_status, sizeof(out[n].app_status), cJSON_GetObjectItem(app, "status"));
+                if (cJSON_IsNumber(observed) && observed->valuedouble > 0)
+                    out[n].observed_at = (int64_t)observed->valuedouble;
+                cpy(out[n].id, sizeof(out[n].id), cJSON_GetObjectItem(window, "id"));
+                cpy(out[n].label, sizeof(out[n].label), cJSON_GetObjectItem(window, "label"));
+                strncpy(out[n].name, out[n].app_name, sizeof(out[n].name) - 1);
+                cJSON *minutes = cJSON_GetObjectItem(window, "window_minutes");
+                cJSON *remaining = cJSON_GetObjectItem(window, "remaining_percent");
+                cJSON *reset = cJSON_GetObjectItem(window, "resets_at");
+                if (cJSON_IsNumber(minutes)) out[n].window_minutes = minutes->valueint;
+                if (cJSON_IsNumber(remaining)) out[n].remaining_percent = remaining->valuedouble;
+                if (cJSON_IsNumber(reset) && reset->valuedouble > 0)
+                    out[n].resets_at = (int64_t)reset->valuedouble;
+                n++; app_windows++;
+            }
+        }
+    }
+    cJSON *providers = cJSON_GetObjectItem(data, "providers");
+    if (n == 0 && providers && cJSON_IsArray(providers)) {
         cJSON *it;
         cJSON_ArrayForEach(it, providers) {
             if (n >= max) break;
@@ -45,6 +77,8 @@ int aiusage_service_fetch(ai_provider_t *out, int max, int *count) {
             out[n].remaining_percent = -1;
             cpy(out[n].id, sizeof(out[n].id), cJSON_GetObjectItem(it, "id"));
             cpy(out[n].name, sizeof(out[n].name), cJSON_GetObjectItem(it, "name"));
+            strncpy(out[n].app_id, "chatgpt", sizeof(out[n].app_id) - 1);
+            strncpy(out[n].app_name, "GPT", sizeof(out[n].app_name) - 1);
             cpy(out[n].label, sizeof(out[n].label), cJSON_GetObjectItem(it, "label"));
             cpy(out[n].display, sizeof(out[n].display), cJSON_GetObjectItem(it, "display"));
             cpy(out[n].status, sizeof(out[n].status), cJSON_GetObjectItem(it, "status"));

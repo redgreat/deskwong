@@ -3,6 +3,7 @@
 #include "sync_screen.h"
 #include "weather_almanac_screen.h"
 #include "voice_screen.h"
+#include "ai_usage_screen.h"
 #include "calendar_service.h"
 #include "holiday_service.h"
 #include "ui_fonts.h"
@@ -24,6 +25,7 @@ static void save(const char *path) {
     fprintf(f,"P5\n400 300\n255\n"); fwrite(pixels,1,sizeof(pixels),f); fclose(f);
 }
 int main(int argc,char **argv) {
+    setvbuf(stdout, NULL, _IONBF, 0);
     _putenv_s("TZ", "CST-8"); _tzset();
     lv_init();
     static lv_color_t buffer[400*300];
@@ -79,14 +81,27 @@ int main(int argc,char **argv) {
     float expected = 0;
     for (int day = 1; day <= calendar_month_days(2026, month); ++day)
         if (holiday_is_workday(2026, month, day)) expected += 8;
-    ai_provider_t five = {}, weekly = {};
-    five.remaining_percent = 72; weekly.remaining_percent = 44;
+    ai_provider_t ai[4] = {};
+    strcpy(ai[0].app_id, "chatgpt"); strcpy(ai[0].app_name, "GPT"); strcpy(ai[0].app_status, "live"); strcpy(ai[0].label, "5时");
+    strcpy(ai[1].app_id, "chatgpt"); strcpy(ai[1].app_name, "GPT"); strcpy(ai[1].app_status, "live"); strcpy(ai[1].label, "周");
+    ai[0].remaining_percent = 72; ai[1].remaining_percent = 44; ai[0].observed_at = ai[1].observed_at = time(NULL);
     struct tm reset = {}; reset.tm_year=126; reset.tm_mon=8; reset.tm_mday=12; reset.tm_hour=18; reset.tm_min=30;
-    five.resets_at = mktime(&reset); reset.tm_mday=18; weekly.resets_at=mktime(&reset);
-    main_screen_update_summary(empty?0:64,expected,empty?NULL:"晴\n26C / 58%",empty?0:argc>4?atoi(argv[4]):100,lunar,empty?NULL:&five,empty?NULL:&weekly,!empty,empty?0:12800,empty?NAN:24.0f,empty?NAN:52.0f);
+    ai[0].resets_at = mktime(&reset); reset.tm_mday=18; ai[1].resets_at=mktime(&reset);
+    bool ai_dual = argc>3 && (strcmp(argv[3], "ai-dual") == 0 || strcmp(argv[3], "ai-page-dual") == 0);
+    if (ai_dual) {
+        strcpy(ai[2].app_id, "devin"); strcpy(ai[2].app_name, "Devin"); strcpy(ai[2].app_status, "cached"); strcpy(ai[2].label, "日");
+        strcpy(ai[3].app_id, "devin"); strcpy(ai[3].app_name, "Devin"); strcpy(ai[3].app_status, "cached"); strcpy(ai[3].label, "周");
+        ai[2].remaining_percent=61; ai[3].remaining_percent=28; ai[2].observed_at=ai[3].observed_at=time(NULL)-600;
+        ai[2].resets_at=ai[0].resets_at; ai[3].resets_at=ai[1].resets_at;
+    }
+    main_screen_update_summary(empty?0:64,expected,empty?NULL:"晴\n26C / 58%",empty?0:argc>4?atoi(argv[4]):100,lunar,empty?NULL:ai,empty?0:ai_dual?4:2,!empty,empty?0:12800,empty?NAN:24.0f,empty?NAN:52.0f);
     sync_screen_init(400,300);
     weather_almanac_screen_init(400,300);
     voice_screen_init(400,300);
+    ai_usage_screen_init(400,300);
+    if (argc>3 && (strcmp(argv[3],"ai-page")==0 || strcmp(argv[3],"ai-page-dual")==0)) {
+        ai_usage_screen_update(ai, ai_dual ? 4 : 2); ai_usage_screen_show();
+    }
     if (argc>3 && strcmp(argv[3],"sync")==0) {
         racebox_progress_t p={};p.state=RACEBOX_UPLOADING;p.received=750;p.total=753;p.uploaded=612;p.download_done=true;p.percent=81;p.elapsed_seconds=23;p.speed_kbps_x10=326;
         strcpy(p.device,"RaceBox Mini S 2254300997");strcpy(p.message,"正在上传到服务器");

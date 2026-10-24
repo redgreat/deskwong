@@ -59,12 +59,14 @@ bool voice_context_service_report(const voice_context_snapshot_t *s) {
     cJSON_AddNumberToObject(weather, "humidity_percent", s->weather.humidity);
     cJSON_AddStringToObject(weather, "almanac_yi", s->weather_detail.almanac_yi);
     cJSON_AddStringToObject(weather, "almanac_ji", s->weather_detail.almanac_ji);
-    cJSON *race = cJSON_AddObjectToObject(root, "racebox");
-    char date[16];
-    snprintf(date, sizeof(date), "%04d-%02d-%02d", s->year, s->month, s->day);
-    cJSON_AddStringToObject(race, "date", date);
-    cJSON_AddNumberToObject(race, "synced_points", s->racebox_points);
-    cJSON_AddBoolToObject(race, "sync_complete", s->racebox_complete);
+    if (s->racebox_points >= 0) {
+        cJSON *race = cJSON_AddObjectToObject(root, "racebox");
+        char date[16];
+        snprintf(date, sizeof(date), "%04d-%02d-%02d", s->year, s->month, s->day);
+        cJSON_AddStringToObject(race, "date", date);
+        cJSON_AddNumberToObject(race, "synced_points", s->racebox_points);
+        cJSON_AddBoolToObject(race, "sync_complete", s->racebox_complete);
+    }
     char *body = cJSON_PrintUnformatted(root);
     bool ok = body && http_post_json(s_url, s_token, s_device_id, body);
     ESP_LOGI(TAG, "context report %s points=%d", ok ? "ok" : "failed", s->racebox_points);

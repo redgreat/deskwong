@@ -19,6 +19,11 @@ func TestSettingsPersistAndRestartBoundary(t *testing.T) {
 	seed.Worktime.PingCode.BaseURL = "https://zhongrui.pingcode.com"
 	seed.Worktime.PingCode.Username = "test-user"
 	seed.Worktime.PingCode.Password = "ping-secret"
+	seed.AIUsage.Providers = defaultAIProviders()
+	seed.AIUsage.Providers[1].Username = "devin-user"
+	seed.AIUsage.Providers[1].Password = "devin-secret"
+	seed.AIUsage.Providers[1].APIToken = "devin-token"
+	seed.AIUsage.Providers[3].RefreshToken = "mimo-refresh"
 	path := filepath.Join(t.TempDir(), "settings.sqlite")
 	db, err := openSettings(path, seed)
 	if err != nil {
@@ -32,7 +37,7 @@ func TestSettingsPersistAndRestartBoundary(t *testing.T) {
 	if err := db.QueryRow("SELECT body FROM settings WHERE id=1").Scan(&raw); err != nil {
 		t.Fatal(err)
 	}
-	for _, secret := range []string{"admin-secret", "ping-secret"} {
+	for _, secret := range []string{"admin-secret", "ping-secret", "devin-secret", "devin-token", "mimo-refresh"} {
 		if strings.Contains(raw, secret) {
 			t.Fatalf("SQLite contains plaintext secret %q", secret)
 		}
@@ -61,6 +66,12 @@ func TestSettingsPersistAndRestartBoundary(t *testing.T) {
 	if response.Data.Worktime.PingCode.Password != "******" {
 		t.Fatal("PingCode password was not masked")
 	}
+	if response.Data.AIUsage.Providers[1].Password != "******" || response.Data.AIUsage.Providers[1].APIToken != "******" {
+		t.Fatal("AI provider secrets were not masked")
+	}
+	if response.Data.AIUsage.Providers[3].RefreshToken != "******" {
+		t.Fatal("MiMo refresh token was not masked")
+	}
 	response.Data.Worktime.PingCode.Username = "changed-user"
 	body, _ := json.Marshal(response.Data)
 	if w = request("PUT", "admin-secret", body); w.Code != 200 {
@@ -81,7 +92,7 @@ func TestSettingsPersistAndRestartBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if saved.Worktime.PingCode.Username != "changed-user" || saved.Worktime.PingCode.Password != "ping-secret" || saved.Server.Token != "admin-secret" || saved.Server.Password != "admin-secret" {
+	if saved.Worktime.PingCode.Username != "changed-user" || saved.Worktime.PingCode.Password != "ping-secret" || saved.Server.Token != "admin-secret" || saved.Server.Password != "admin-secret" || saved.AIUsage.Providers[1].Password != "devin-secret" || saved.AIUsage.Providers[1].APIToken != "devin-token" || saved.AIUsage.Providers[3].RefreshToken != "mimo-refresh" {
 		t.Fatal("persistent config or masked secrets were lost")
 	}
 	app.settings = db
