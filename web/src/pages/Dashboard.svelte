@@ -304,6 +304,7 @@
             {:else}
               <p class="usage-empty">暂无用量数据</p>
             {/if}
+            {#if app.error}<p class="usage-error">{app.error}</p>{/if}
           </div>
         {/each}
       </div>
@@ -520,6 +521,7 @@
   .usage-value { text-align: right; color: var(--text); font-weight: 600; }
   .usage-reset { text-align: right; }
   .usage-empty { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
+  .usage-error { margin: 6px 0 0; color: var(--warning); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
   .reminder-master, .voice-master { margin-bottom: 14px; }
   .reminder-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; transition: opacity .2s; }
   .reminder-grid.disabled { opacity: .58; }

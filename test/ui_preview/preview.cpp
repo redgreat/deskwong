@@ -81,18 +81,30 @@ int main(int argc,char **argv) {
     float expected = 0;
     for (int day = 1; day <= calendar_month_days(2026, month); ++day)
         if (holiday_is_workday(2026, month, day)) expected += 8;
-    ai_provider_t ai[4] = {};
-    strcpy(ai[0].app_id, "chatgpt"); strcpy(ai[0].app_name, "ChatGPT"); strcpy(ai[0].app_status, "live"); strcpy(ai[0].label, "5时");
-    strcpy(ai[1].app_id, "chatgpt"); strcpy(ai[1].app_name, "ChatGPT"); strcpy(ai[1].app_status, "live"); strcpy(ai[1].label, "周");
+    ai_provider_t ai[8] = {};
+    strcpy(ai[0].app_id, "chatgpt"); strcpy(ai[0].app_name, "ChatGPT"); strcpy(ai[0].app_status, "live"); strcpy(ai[0].label, "5小时");
+    strcpy(ai[1].app_id, "chatgpt"); strcpy(ai[1].app_name, "ChatGPT"); strcpy(ai[1].app_status, "live"); strcpy(ai[1].label, "每周");
     ai[0].remaining_percent = 72; ai[1].remaining_percent = 44; ai[0].observed_at = ai[1].observed_at = time(NULL);
     struct tm reset = {}; reset.tm_year=126; reset.tm_mon=8; reset.tm_mday=12; reset.tm_hour=18; reset.tm_min=30;
     ai[0].resets_at = mktime(&reset); reset.tm_mday=18; ai[1].resets_at=mktime(&reset);
     bool ai_dual = argc>3 && (strcmp(argv[3], "ai-dual") == 0 || strcmp(argv[3], "ai-page-dual") == 0);
     if (ai_dual) {
         strcpy(ai[2].app_id, "devin"); strcpy(ai[2].app_name, "Devin"); strcpy(ai[2].app_status, "cached"); strcpy(ai[2].label, "日");
-        strcpy(ai[3].app_id, "devin"); strcpy(ai[3].app_name, "Devin"); strcpy(ai[3].app_status, "cached"); strcpy(ai[3].label, "周");
+        strcpy(ai[3].app_id, "devin"); strcpy(ai[3].app_name, "Devin"); strcpy(ai[3].app_status, "cached"); strcpy(ai[3].label, "每周");
         ai[2].remaining_percent=61; ai[3].remaining_percent=28; ai[2].observed_at=ai[3].observed_at=time(NULL)-600;
         ai[2].resets_at=ai[0].resets_at; ai[3].resets_at=ai[1].resets_at;
+    }
+    /* AI 独立页固定展示四个应用：ai-page 状态下把 Claude 也造出来，MiMo 只给状态不给窗口，
+     * 用来验证"没数据先空着"的占位 */
+    bool ai_page = argc>3 && (strcmp(argv[3], "ai-page") == 0 || strcmp(argv[3], "ai-page-dual") == 0);
+    int ai_page_count = 0;
+    if (ai_page) {
+        strcpy(ai[4].app_id, "claude"); strcpy(ai[4].app_name, "Claude"); strcpy(ai[4].app_status, "live"); strcpy(ai[4].label, "日");
+        strcpy(ai[5].app_id, "claude"); strcpy(ai[5].app_name, "Claude"); strcpy(ai[5].app_status, "live"); strcpy(ai[5].label, "每周");
+        ai[4].remaining_percent=83; ai[5].remaining_percent=57; ai[4].observed_at=ai[5].observed_at=time(NULL);
+        ai[4].resets_at=ai[0].resets_at; ai[5].resets_at=ai[1].resets_at;
+        strcpy(ai[6].app_id, "mimo"); strcpy(ai[6].app_name, "MiMo"); strcpy(ai[6].app_status, "unavailable");
+        ai_page_count = 7;
     }
     main_screen_update_summary(empty?0:64,expected,empty?NULL:"晴\n26C / 58%",empty?0:argc>4?atoi(argv[4]):100,lunar,empty?NULL:ai,empty?0:ai_dual?4:2,!empty,empty?0:12800,empty?NAN:24.0f,empty?NAN:52.0f);
     sync_screen_init(400,300);
@@ -100,7 +112,7 @@ int main(int argc,char **argv) {
     voice_screen_init(400,300);
     ai_usage_screen_init(400,300);
     if (argc>3 && (strcmp(argv[3],"ai-page")==0 || strcmp(argv[3],"ai-page-dual")==0)) {
-        ai_usage_screen_update(ai, ai_dual ? 4 : 2); ai_usage_screen_show();
+        ai_usage_screen_update(ai, ai_page ? ai_page_count : (ai_dual ? 4 : 2)); ai_usage_screen_show();
     }
     if (argc>3 && strcmp(argv[3],"sync")==0) {
         racebox_progress_t p={};p.state=RACEBOX_UPLOADING;p.received=750;p.total=753;p.uploaded=612;p.download_done=true;p.percent=81;p.elapsed_seconds=23;p.speed_kbps_x10=326;

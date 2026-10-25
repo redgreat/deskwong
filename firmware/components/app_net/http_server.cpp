@@ -475,6 +475,7 @@ static esp_err_t ai_handler(httpd_req_t *req) {
         cJSON_AddStringToObject(app, "id", id);
         cJSON_AddStringToObject(app, "name", items[i].app_name[0] ? items[i].app_name : id);
         cJSON_AddStringToObject(app, "status", items[i].app_status[0] ? items[i].app_status : "unavailable");
+        if (items[i].app_error[0]) cJSON_AddStringToObject(app, "error", items[i].app_error);
         if (items[i].observed_at > 0)
             cJSON_AddNumberToObject(app, "observed_at", (double)items[i].observed_at);
         cJSON *wins = cJSON_AddArrayToObject(app, "windows");

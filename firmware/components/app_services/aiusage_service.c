@@ -18,6 +18,16 @@ static void cpy(char *dst, size_t n, cJSON *it) {
     else dst[0] = 0;
 }
 
+/* 服务端下发的短标签在桌面那一行里读着像漏了字（"5时"/"周"），这里补成完整说法。
+ * 放在设备侧是为了不用等服务端重新部署就能改回来。 */
+static void expand_label(char *dst, size_t n) {
+    const char *full = NULL;
+    if (!strcmp(dst, "5时")) full = "5小时";
+    else if (!strcmp(dst, "周")) full = "每周";
+    if (!full || strlen(full) > n - 1) return;
+    strcpy(dst, full);
+}
+
 int aiusage_service_fetch(ai_provider_t *out, int max, int *count) {
     if (s_base[0] == '\0') return 1;
     char url[320];
@@ -52,10 +62,14 @@ int aiusage_service_fetch(ai_provider_t *out, int max, int *count) {
                 cpy(out[n].app_id, sizeof(out[n].app_id), cJSON_GetObjectItem(app, "id"));
                 cpy(out[n].app_name, sizeof(out[n].app_name), cJSON_GetObjectItem(app, "name"));
                 cpy(out[n].app_status, sizeof(out[n].app_status), cJSON_GetObjectItem(app, "status"));
+                /* 服务端把查不到额度的原因放在这里（只对这个 token 可见），
+                 * 透传给设备后台，用户不用去翻服务器日志就能知道为什么显示不出来 */
+                cpy(out[n].app_error, sizeof(out[n].app_error), cJSON_GetObjectItem(app, "error"));
                 if (cJSON_IsNumber(observed) && observed->valuedouble > 0)
                     out[n].observed_at = (int64_t)observed->valuedouble;
                 cpy(out[n].id, sizeof(out[n].id), cJSON_GetObjectItem(window, "id"));
                 cpy(out[n].label, sizeof(out[n].label), cJSON_GetObjectItem(window, "label"));
+                expand_label(out[n].label, sizeof(out[n].label));
                 strncpy(out[n].name, out[n].app_name, sizeof(out[n].name) - 1);
                 cJSON *minutes = cJSON_GetObjectItem(window, "window_minutes");
                 cJSON *remaining = cJSON_GetObjectItem(window, "remaining_percent");
@@ -80,6 +94,7 @@ int aiusage_service_fetch(ai_provider_t *out, int max, int *count) {
             strncpy(out[n].app_id, "chatgpt", sizeof(out[n].app_id) - 1);
             strncpy(out[n].app_name, "ChatGPT", sizeof(out[n].app_name) - 1);
             cpy(out[n].label, sizeof(out[n].label), cJSON_GetObjectItem(it, "label"));
+            expand_label(out[n].label, sizeof(out[n].label));
             cpy(out[n].display, sizeof(out[n].display), cJSON_GetObjectItem(it, "display"));
             cpy(out[n].status, sizeof(out[n].status), cJSON_GetObjectItem(it, "status"));
             cJSON *window = cJSON_GetObjectItem(it, "window_minutes");

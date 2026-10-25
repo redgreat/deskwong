@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -51,7 +52,9 @@ type AIApp struct {
 	Status     string     `json:"status"`
 	ObservedAt int64      `json:"observed_at,omitempty"`
 	Windows    []AIWindow `json:"windows"`
-	Error      string     `json:"-"`
+	/* 失败原因只对持有 Bearer Token 的设备返回：开发板后台或
+	 * script/test_ai_usage.ps1 能直接看到原因，不用再去翻 docker 日志 */
+	Error string `json:"error,omitempty"`
 }
 
 var aiCatalog = map[string]string{
@@ -113,7 +116,9 @@ func validateAIConfig(cfg Config) error {
 				return fmt.Errorf("%s 不支持服务容器本机登录态", aiCatalog[p.ID])
 			}
 		case "manual_token":
-			if p.ID != "devin" || p.Username == "" || p.APIToken == "" {
+			/* 组织 ID 可以留空：apk_ 开头的 Key 内嵌组织 ID，运行时自动解析 */
+			if p.ID != "devin" || p.APIToken == "" ||
+				(p.Username == "" && !strings.HasPrefix(strings.TrimSpace(p.APIToken), "apk_")) {
 				return fmt.Errorf("%s 手动令牌模式需要组织 ID 和 Bearer Token", aiCatalog[p.ID])
 			}
 		case "oauth_refresh":
@@ -154,14 +159,15 @@ func enabledAIProviders(cfg Config) []AIProviderConfig {
 	return out
 }
 
+/* 桌面一行里要能一眼看懂：按周的写「每周」，5 小时窗口写「5小时」，按日的写「日」 */
 func labelForWindow(id string, minutes int) string {
 	switch {
 	case strings.Contains(id, "daily") || minutes == 1440:
 		return "日"
 	case strings.Contains(id, "weekly") || minutes == 10080:
-		return "周"
+		return "每周"
 	case minutes == 300:
-		return "5时"
+		return "5小时"
 	default:
 		return "窗"
 	}
@@ -332,6 +338,17 @@ func unixOrDate(v any) int64 {
 
 func (a *App) fetchDevinWeb(ctx context.Context, organization, token string) (AIApp, error) {
 	organization = strings.Trim(strings.TrimSpace(organization), "/")
+	/* Devin 的 apk_ API Key 内嵌组织 ID（apk_<base64("org-...")>）。用户在 conf.yml 里
+	 * 通常只知道组织 slug（如 redgreat），填错会一直 401，这里直接从 Key 里解出来。 */
+	if organization == "" ||
+		(!strings.HasPrefix(organization, "org-") && !strings.HasPrefix(organization, "org_")) {
+		if fromKey := devinOrgFromToken(token); fromKey != "" {
+			if fromKey != organization {
+				slog.Info("Devin organization derived from API key", "org", fromKey, "configured", organization)
+			}
+			organization = fromKey
+		}
+	}
 	internalOrg := strings.HasPrefix(organization, "org-") || strings.HasPrefix(organization, "org_") || strings.HasPrefix(organization, "organizations/org-") || strings.HasPrefix(organization, "organizations/org_")
 	if strings.HasPrefix(organization, "organizations/") {
 		organization = strings.TrimPrefix(organization, "organizations/")
@@ -349,6 +366,35 @@ func (a *App) fetchDevinWeb(ctx context.Context, organization, token string) (AI
 	return a.fetchDevinResponse(req)
 }
 
+/* apk_ Key 的载荷是 base64，前缀是可打印的组织 ID，后面跟二进制签名 */
+func devinOrgFromToken(token string) string {
+	token = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(token), "Bearer "))
+	const prefix = "apk_"
+	if !strings.HasPrefix(token, prefix) {
+		return ""
+	}
+	payload := strings.TrimPrefix(token, prefix)
+	decoded, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		s := strings.NewReplacer("-", "+", "_", "/").Replace(payload)
+		if pad := len(s) % 4; pad != 0 {
+			s += strings.Repeat("=", 4-pad)
+		}
+		if decoded, err = base64.StdEncoding.DecodeString(s); err != nil {
+			return ""
+		}
+	}
+	end := 0
+	for end < len(decoded) && decoded[end] >= 0x20 && decoded[end] <= 0x7e {
+		end++
+	}
+	org := strings.TrimSpace(string(decoded[:end]))
+	if !strings.HasPrefix(org, "org-") && !strings.HasPrefix(org, "org_") {
+		return ""
+	}
+	return org
+}
+
 func (a *App) fetchDevinResponse(req *http.Request) (AIApp, error) {
 	resp, err := a.client.Do(req)
 	if err != nil {
@@ -360,7 +406,14 @@ func (a *App) fetchDevinResponse(req *http.Request) (AIApp, error) {
 		return AIApp{}, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return AIApp{}, fmt.Errorf("Devin 用量接口 HTTP %d", resp.StatusCode)
+		detail := strings.TrimSpace(string(body))
+		if len(detail) > 120 {
+			detail = detail[:120]
+		}
+		if detail == "" {
+			return AIApp{}, fmt.Errorf("Devin 用量接口 HTTP %d", resp.StatusCode)
+		}
+		return AIApp{}, fmt.Errorf("Devin 用量接口 HTTP %d: %s", resp.StatusCode, detail)
 	}
 	var raw map[string]any
 	if err := json.Unmarshal(body, &raw); err != nil {
@@ -368,15 +421,15 @@ func (a *App) fetchDevinResponse(req *http.Request) (AIApp, error) {
 	}
 	app := AIApp{ID: "devin", Name: aiCatalog["devin"], Status: aiStatusLive, ObservedAt: time.Now().Unix()}
 	hide, _ := raw["hide_daily_quota"].(bool)
-	add := func(id, label string, used any, reset any) {
+	add := func(id, label string, minutes int, used any, reset any) {
 		if p, ok := percentValue(used); ok {
-			app.Windows = append(app.Windows, AIWindow{ID: id, Label: label, WindowMinutes: map[string]int{"日": 1440, "周": 10080}[label], RemainingPercent: 100 - p, ResetsAt: unixOrDate(reset)})
+			app.Windows = append(app.Windows, AIWindow{ID: id, Label: label, WindowMinutes: minutes, RemainingPercent: 100 - p, ResetsAt: unixOrDate(reset)})
 		}
 	}
 	if !hide {
-		add("devin_daily", "日", raw["daily_percentage"], raw["daily_reset_at"])
+		add("devin_daily", "日", 1440, raw["daily_percentage"], raw["daily_reset_at"])
 	}
-	add("devin_weekly", "周", raw["weekly_percentage"], raw["weekly_reset_at"])
+	add("devin_weekly", "每周", 10080, raw["weekly_percentage"], raw["weekly_reset_at"])
 	if len(app.Windows) == 0 {
 		return AIApp{}, errors.New("Devin 响应没有日/周额度")
 	}
@@ -472,7 +525,7 @@ func (a *App) fetchDevinClient(ctx context.Context) (AIApp, error) {
 	if !ps.PlanInfo.Hide {
 		app.Windows = append(app.Windows, AIWindow{ID: "devin_daily", Label: "日", WindowMinutes: 1440, RemainingPercent: clampPercent(ps.Daily), ResetsAt: ps.DailyReset})
 	}
-	app.Windows = append(app.Windows, AIWindow{ID: "devin_weekly", Label: "周", WindowMinutes: 10080, RemainingPercent: clampPercent(ps.Weekly), ResetsAt: ps.WeeklyReset})
+	app.Windows = append(app.Windows, AIWindow{ID: "devin_weekly", Label: "每周", WindowMinutes: 10080, RemainingPercent: clampPercent(ps.Weekly), ResetsAt: ps.WeeklyReset})
 	return app, nil
 }
 

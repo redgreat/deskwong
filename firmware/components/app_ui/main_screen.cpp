@@ -238,7 +238,7 @@ static void update_ai_layout(const ai_provider_t *ai, int count) {
     if (app_count <= 1) {
         const char *id = app_count ? ids[0] : "chatgpt";
         lv_img_set_src(s_ai_icon[0], ai_provider_icon(id, 24));
-        lv_obj_set_pos(s_ai_icon[0], 326, 205);
+        lv_obj_set_pos(s_ai_icon[0], 317, 205);
         set_ai_object_visible(s_ai_icon[0], true);
         set_ai_object_visible(s_ai_icon[1], false);
         /* 图标右侧补回应用短名：b2e6868 重构成多应用布局时把这块文字删掉了，单个应用时
@@ -250,13 +250,22 @@ static void update_ai_layout(const ai_provider_t *ai, int count) {
             if (ai[first].app_name[0]) nm = ai[first].app_name;
             else if (ai[first].name[0]) nm = ai[first].name;
         }
-        lv_obj_set_pos(s_ai[2], 353, 209);
-        lv_obj_set_width(s_ai[2], 47);
-        text_changed(s_ai[2], nm);
-        set_ai_object_visible(s_ai[2], true);
         /* 名称行只占标签本身，同槽位的窗口小标签和进度条要藏起来 */
         set_ai_object_visible(s_ai_window[2], false);
         set_ai_object_visible(lv_obj_get_parent(s_ai_fill[2]), false);
+        /* 「图标 + 应用名」作为一组在右栏（315..395）里水平居中：名字长短不一
+         * （ChatGPT/Devin/Claude/MiMo），写死坐标会像 ChatGPT 一样贴到屏幕右边缘 */
+        int name_w = (int)lv_txt_get_width(nm, (uint32_t)strlen(nm), &lv_font_zh_14, 0, LV_TEXT_FLAG_NONE);
+        name_w -= 4;    /* lv_txt_get_width 是步进宽度，去掉首尾留白后按实际墨迹居中 */
+        if (name_w < 8) name_w = 8;
+        if (name_w > 50) name_w = 50;
+        int group_x = 315 + (80 - (26 + name_w)) / 2;   /* 图标墨迹 20px + 间距 6px */
+        if (group_x < 315) group_x = 315;
+        lv_obj_set_pos(s_ai_icon[0], group_x - 2, 205);
+        lv_obj_set_pos(s_ai[2], group_x + 25, 209);
+        lv_obj_set_width(s_ai[2], name_w + 2);
+        text_changed(s_ai[2], nm);
+        set_ai_object_visible(s_ai[2], true);
         for (int i = 0; i < 2; ++i) {
             int index = app_count ? windows[0][i] : -1;
             lv_obj_set_pos(s_ai_window[i], 315, i ? 270 : 235);
@@ -285,8 +294,9 @@ static void update_ai_layout(const ai_provider_t *ai, int count) {
             int slot = app * 2 + win, index = windows[app][win];
             int y = base_y + win * 20;
             lv_obj_set_pos(s_ai_window[slot], 335, y);
-            lv_obj_set_pos(s_ai[slot], 354, y - 3);
-            lv_obj_set_width(s_ai[slot], 41);
+            /* 标签补全成「5小时/每周」后变宽，数值右移并缩到屏幕右缘内为止 */
+            lv_obj_set_pos(s_ai[slot], 362, y - 3);
+            lv_obj_set_width(s_ai[slot], 34);
             lv_obj_set_pos(lv_obj_get_parent(s_ai_fill[slot]), 335, y + 14);
             lv_obj_set_size(lv_obj_get_parent(s_ai_fill[slot]), 59, 3);
             lv_obj_set_height(s_ai_fill[slot], 3);
@@ -470,7 +480,7 @@ void main_screen_init(int width, int height) {
      * 多建一个标签就会顶到上限，而单/双应用两套布局互斥，槽位一定能腾出来。 */
     const int wy[4] = {235, 270, 216, 260};
     for (int i = 0; i < 4; ++i) {
-        s_ai_window[i] = label(scr, i % 2 ? "周" : "5时", &lv_font_zh_10, 315, wy[i]);
+        s_ai_window[i] = label(scr, i % 2 ? "每周" : "5小时", &lv_font_zh_10, 315, wy[i]);
         s_ai[i] = label(scr, "--", &lv_font_zh_14, 350, wy[i] - 3, 45);
         lv_obj_set_style_text_align(s_ai[i], LV_TEXT_ALIGN_LEFT, 0);
         meter(scr, 315, wy[i] + 17, 79, i < 2 ? 5 : 3, &s_ai_fill[i]);
@@ -480,7 +490,7 @@ void main_screen_init(int width, int height) {
             lv_obj_add_flag(lv_obj_get_parent(s_ai_fill[i]), LV_OBJ_FLAG_HIDDEN);
         }
     }
-    lv_obj_set_pos(s_ai_icon[0], 326, 205);
+    lv_obj_set_pos(s_ai_icon[0], 317, 205);
     lv_obj_add_flag(s_ai_icon[1], LV_OBJ_FLAG_HIDDEN);
     s_remind = label(scr, "", &lv_font_zh_14, 7, height-25, width-14);
     lv_obj_set_style_bg_color(s_remind, lv_color_black(), 0);

@@ -32,13 +32,14 @@ ai_usage:
       order: 0
       auth_mode: "client_login"
 
-    # Devin：client_login 读取客户端登录态；manual_token 需要组织 ID + Bearer Token
+    # Devin：client_login 读取客户端登录态；manual_token 用 API Key（apk_ 开头，组织 ID 会自动从
+    # Key 里解析，也可以在 username 里显式填 org- 开头的组织 ID，不要填组织 slug）
     - id: "devin"
       enabled: false
       order: 1
       auth_mode: "manual_token"
-      username: ""      # 组织 ID
-      api_token: ""     # Bearer Token
+      username: ""      # 组织 ID（org-…）；留空时从 apk_ Key 自动解析
+      api_token: ""     # Devin API Key（apk_…）
 
     # Claude Code：外部 API 模式，需要 api_base（也可改成 password 模式填账号密码）
     - id: "claude"

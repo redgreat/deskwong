@@ -572,7 +572,8 @@ static void ui_update_task(void *arg) {
                     weather, g_weather.text[0] ? g_weather.icon : 0, lunar_full, g_ai, g_ai_count,
                     g_cfg.racebox_enabled && racebox_service_synced_today(),
                     g_cfg.racebox_enabled ? racebox_service_point_count() : 0, g_temp, g_humi);
-                ai_usage_screen_update(g_ai, g_ai_count);
+                /* AI 独立页固定展示四个应用，用未按四选二过滤的原始数据；桌面右栏才用 g_ai */
+                ai_usage_screen_update(g_ai_raw, g_ai_raw_count);
                 main_screen_update_calendar(cells);
                 Lvgl_unlock();
             }
@@ -661,7 +662,7 @@ static void button_task(void *arg) {
                 if (ai_usage_screen_visible()) ai_usage_screen_hide();
                 else {
                     weather_almanac_screen_hide();
-                    ai_usage_screen_update(g_ai, g_ai_count);
+                    ai_usage_screen_update(g_ai_raw, g_ai_raw_count);
                     ai_usage_screen_show();
                 }
                 Lvgl_unlock();

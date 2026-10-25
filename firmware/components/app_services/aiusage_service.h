@@ -12,6 +12,7 @@ typedef struct {
     char app_id[16];
     char app_name[16];
     char app_status[16];
+    char app_error[48];        // 服务端返回的应用级失败原因，只在查不到额度时有值
     int64_t observed_at;       // application sample time, Unix seconds
     char name[32];
     char label[32];

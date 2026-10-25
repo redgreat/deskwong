@@ -27,7 +27,7 @@
 `GET {base}/ai/usage`，Bearer 鉴权。返回服务端所有 `enabled` 应用（最多四个），按服务配置 `order` 升序排列；每个应用包含稳定 `id`、桌面短名 `name`、状态与最多两个主要窗口。设备按自身 NVS 里“四选二”的选择过滤后再渲染。窗口使用稳定 `id`、短标签 `label`、`remaining_percent` 与 `resets_at`；`remaining_percent` 为 0～100 的剩余百分比，未知时省略，`resets_at` 为 Unix 秒，未知时省略。`status` 取 `live`、`cached`、`stale`、`unavailable`，缓存状态可附 `observed_at`。
 
 ```json
-{"code":0,"data":{"apps":[{"id":"chatgpt","name":"GPT","status":"live","windows":[{"id":"chatgpt_5h","label":"5时","window_minutes":300,"remaining_percent":72,"resets_at":1789223400},{"id":"chatgpt_weekly","label":"周","window_minutes":10080,"remaining_percent":44,"resets_at":1789741800}]},{"id":"devin","name":"Devin","status":"cached","observed_at":1792809000,"windows":[{"id":"devin_daily","label":"日","remaining_percent":61,"resets_at":1792828800},{"id":"devin_weekly","label":"周","remaining_percent":28,"resets_at":1793260800}]}]}}
+{"code":0,"data":{"apps":[{"id":"chatgpt","name":"ChatGPT","status":"live","windows":[{"id":"chatgpt_5h","label":"5小时","window_minutes":300,"remaining_percent":72,"resets_at":1789223400},{"id":"chatgpt_weekly","label":"每周","window_minutes":10080,"remaining_percent":44,"resets_at":1789741800}]},{"id":"devin","name":"Devin","status":"cached","observed_at":1792809000,"windows":[{"id":"devin_daily","label":"日","remaining_percent":61,"resets_at":1792828800},{"id":"devin_weekly","label":"每周","remaining_percent":28,"resets_at":1793260800}]}]}}
 ```
 
 兼容期内聚合服务可继续接受旧 `providers` 平铺结构并归入 `chatgpt` 应用，但新固件和服务以 `apps[].windows[]` 为主契约。服务端不对启用数量做“四选二”限制，桌面消费响应时按设备 NVS 里保存的两个应用 id 过滤，不能只取响应前两个。厂商会员额度若只能从本机登录态或未公开只读接口取得，适配器运行在自建服务所在主机，凭据只读挂载或通过只写配置注入；日志、响应和缓存不得包含 Token、Cookie、账号标识或客户端数据库内容。

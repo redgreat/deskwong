@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -77,6 +78,23 @@ func TestDevinClientLoginAndManualQuota(t *testing.T) {
 	got, err = app.fetchDevinWeb(context.Background(), "org_test", "Bearer token")
 	if err != nil || got.Windows[0].RemainingPercent != 88 || got.Windows[1].RemainingPercent != 58 {
 		t.Fatalf("manual result=%+v err=%v", got, err)
+	}
+	/* 桌面短标签必须写全：按周的是「每周」，不是「周」 */
+	if got.Windows[1].Label != "每周" || got.Windows[0].Label != "日" {
+		t.Fatalf("devin labels = %q / %q", got.Windows[0].Label, got.Windows[1].Label)
+	}
+}
+
+/* ChatGPT 的 5 小时窗口必须写「5小时」，每周窗口写「每周」 */
+func TestChatGPTWindowLabelsAreReadable(t *testing.T) {
+	if got := labelForWindow("chatgpt_5h", 300); got != "5小时" {
+		t.Fatalf("5h label = %q", got)
+	}
+	if got := labelForWindow("chatgpt_weekly", 10080); got != "每周" {
+		t.Fatalf("weekly label = %q", got)
+	}
+	if got := labelForWindow("x_daily", 1440); got != "日" {
+		t.Fatalf("daily label = %q", got)
 	}
 }
 
@@ -228,6 +246,37 @@ func TestAIUsageFetchesUpstreamOnRequest(t *testing.T) {
 	app.aiUsage(rec, httptest.NewRequest(http.MethodGet, "/ai/usage", nil))
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"status":"stale"`) {
 		t.Fatalf("stale fallback code=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+/* Devin 的 apk_ API Key 内嵌组织 ID；conf.yml 里填了组织 slug（或留空）时必须自动改用 Key 里的 org-…，
+ * 否则接口会一直 401 */
+func TestDevinOrgDerivedFromApiKey(t *testing.T) {
+	if got := devinOrgFromToken("apk_" + base64.StdEncoding.EncodeToString([]byte("org-abc123\xff\xfe"))); got != "org-abc123" {
+		t.Fatalf("org from key = %q", got)
+	}
+	if got := devinOrgFromToken("not-a-key"); got != "" {
+		t.Fatalf("non apk_ token should yield empty org, got %q", got)
+	}
+	if got := devinOrgFromToken("apk_" + base64.StdEncoding.EncodeToString([]byte("slug-only"))); got != "" {
+		t.Fatalf("payload without org id should yield empty org, got %q", got)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/org-abc123/billing/quota/usage" || r.Header.Get("x-cog-org-id") != "org-abc123" {
+			t.Errorf("unexpected request %s org header=%q", r.URL.Path, r.Header.Get("x-cog-org-id"))
+		}
+		_, _ = w.Write([]byte(`{"daily_percentage":10,"weekly_percentage":30,"daily_reset_at":"2026-11-01T00:00:00Z","weekly_reset_at":1800500000}`))
+	}))
+	defer server.Close()
+	old := devinWebBase
+	devinWebBase = server.URL
+	defer func() { devinWebBase = old }()
+
+	app := &App{client: server.Client()}
+	got, err := app.fetchDevinWeb(context.Background(), "redgreat", "apk_"+base64.StdEncoding.EncodeToString([]byte("org-abc123\xff")))
+	if err != nil || len(got.Windows) != 2 {
+		t.Fatalf("result=%+v err=%v", got, err)
 	}
 }
 
