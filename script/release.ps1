@@ -8,8 +8,28 @@ function die($msg) { Write-Host $msg -ForegroundColor Red; exit 1 }
 function ok($msg)  { Write-Host $msg -ForegroundColor Green }
 
 if (git status --porcelain) { die '工作区不干净，请先提交或暂存改动。' }
-git fetch --tags origin 2>$null
-if ($LASTEXITCODE) { die '拉取标签失败' }
+# 拉取标签。两点注意：
+#  1) 保留 stderr 输出：原来用 2>$null 会把真实报错（网络不通 / 标签被拒绝覆盖）
+#     全部藏掉，屏幕上只剩一句无意义的"拉取标签失败"，完全无法排查；
+#  2) 加重试：访问 github.com 偶发瞬时连不上（Connection refused / timeout），
+#     重试通常即可恢复，不该直接把脚本判死。
+$fetchErr = $null
+$fetchOk  = $false
+for ($i = 1; $i -le 3; $i++) {
+    $fetchErr = git fetch --tags origin 2>&1
+    if (-not $LASTEXITCODE) { $fetchOk = $true; break }
+    Write-Host "第 $i 次拉取标签失败，2 秒后重试..." -ForegroundColor Yellow
+    Start-Sleep -Seconds 2
+}
+if (-not $fetchOk) {
+    Write-Host ($fetchErr -join "`n") -ForegroundColor Red
+    if (($fetchErr -join ' ') -match 'would clobber existing tag') {
+        die '拉取标签失败：本地与远程标签指向不同提交（历史曾被重写）。
+  若确认以本地这份（已清 .zcode）为准，先执行同步：
+    git push --force origin --tags'
+    }
+    die '拉取标签失败：请检查网络连通性（github.com:443）或代理配置。'
+}
 
 if ([string]::IsNullOrWhiteSpace($Version)) {
   $latest = git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname | Select-Object -First 1
