@@ -39,6 +39,7 @@ export const api = {
   login: (user, pass) => req('/api/auth/login', 'POST', { user, pass }),
   getConfig: () => req('/api/config'),
   saveConfig: (cfg) => req('/api/config', 'PUT', cfg),
+  getAI: () => req('/api/ai'),
   restart: () => req('/api/system/restart', 'POST'),
   factoryReset: () => req('/api/system/factory-reset', 'POST'),
   logs: () => req('/api/system/logs'),

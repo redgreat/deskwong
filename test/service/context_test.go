@@ -16,14 +16,12 @@ func contextTestApp(t *testing.T) (*App, func()) {
 	var cfg Config
 	cfg.Server.Listen = ":8001"
 	cfg.Server.Token = "general"
-	cfg.Server.Username = "admin"
-	cfg.Server.Password = "password"
 	cfg.Context.ReportToken = "report-secret"
 	cfg.Context.ReadToken = "read-secret"
 	cfg.Worktime.PingCode.TimeoutSec = 20
-	store, err := openSettings(filepath.Join(t.TempDir(), "settings.sqlite"), cfg)
+	db, err := openDB(filepath.Join(t.TempDir(), "deskwong.sqlite"))
 	if err != nil { t.Fatal(err) }
-	return &App{cfg: cfg, settings: store}, func() { store.Close() }
+	return &App{cfg: cfg, db: db}, func() { db.Close() }
 }
 
 func TestVoiceContextReportAndRead(t *testing.T) {
@@ -117,6 +115,6 @@ func TestVoiceContextRejectsOlderOverwrite(t *testing.T) {
 	post(now, 100)
 	post(now-60, 1)
 	var body string
-	if err := app.settings.QueryRow("SELECT body FROM voice_context_snapshots WHERE device_id='order-device'").Scan(&body); err != nil { t.Fatal(err) }
+	if err := app.db.QueryRow("SELECT body FROM voice_context_snapshots WHERE device_id='order-device'").Scan(&body); err != nil { t.Fatal(err) }
 	if !strings.Contains(body, `"synced_points":100`) { t.Fatalf("older report overwrote snapshot: %s", body) }
 }

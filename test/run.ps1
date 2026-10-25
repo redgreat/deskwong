@@ -83,6 +83,16 @@ try {
 } finally {
     if (Test-Path -LiteralPath $wifiExe) { Remove-Item -LiteralPath $wifiExe -Force }
 }
+$aiPick = Join-Path $PSScriptRoot "firmware/ai_pick"
+$aiPickExe = Join-Path ([IO.Path]::GetTempPath()) ("deskwong-ai-pick-test-" + [guid]::NewGuid().ToString("N") + ".exe")
+try {
+    & gcc -std=c11 -O0 -g -I (Join-Path $aiPick "stubs") -I $services (Join-Path $aiPick "ai_pick_test.c") (Join-Path $services "aiusage_pick.c") -o $aiPickExe
+    if ($LASTEXITCODE) { throw "AI app pick host test compilation failed" }
+    & $aiPickExe
+    if ($LASTEXITCODE) { throw "AI app pick host test failed" }
+} finally {
+    if (Test-Path -LiteralPath $aiPickExe) { Remove-Item -LiteralPath $aiPickExe -Force }
+}
 $portalRw = Join-Path $PSScriptRoot "firmware/portal_rewrite"
 $portalExe = Join-Path ([IO.Path]::GetTempPath()) ("deskwong-portal-rewrite-test-" + [guid]::NewGuid().ToString("N") + ".exe")
 try {
@@ -186,10 +196,29 @@ if ($mainSource -notmatch 'g_remind_shown_tick' -or
 }
 Write-Host "Reminder ring melody / auto dismiss inspection passed"
 
+$aiPickSource = Get-Content -Raw -LiteralPath (Join-Path $services "aiusage_pick.c")
+$serviceCmake = Get-Content -Raw -LiteralPath (Join-Path $services "CMakeLists.txt")
+if ($configHeader -notmatch 'aiusage_apps' -or
+    $configSource -notmatch '"ai_apps"' -or
+    $httpSource -notmatch '"aiusage_apps"' -or
+    $httpSource -notmatch '"/api/ai"' -or
+    $aiPickSource -notmatch 'aiusage_service_pick' -or
+    $serviceCmake -notmatch '"aiusage_pick\.c"' -or
+    $mainSource -notmatch 'aiusage_service_pick' -or
+    $mainSource -notmatch 'aiusage_service_publish' -or
+    $webSource -notmatch 'aiusage_apps' -or
+    $webSource -notmatch 'getAI' -or
+    $webSource -notmatch 'usage-bar|usage-fill') {
+    throw "Device-side AI app pick (4 choose 2) wiring inspection failed"
+}
+Write-Host "Device-side AI app pick (4 choose 2) wiring inspection passed"
+
 & node (Join-Path $PSScriptRoot "web/ota_test.mjs")
 if ($LASTEXITCODE) { throw "Web OTA image inspection failed" }
 & node (Join-Path $PSScriptRoot "web/login_test.mjs")
 if ($LASTEXITCODE) { throw "Web login defaults inspection failed" }
+& node (Join-Path $PSScriptRoot "web/ai_usage_test.mjs")
+if ($LASTEXITCODE) { throw "Web AI usage 4-choose-2 inspection failed" }
 
 $uiSource = Join-Path $PSScriptRoot "ui_preview"
 $uiBuild = Join-Path $repo "build/ui_preview"

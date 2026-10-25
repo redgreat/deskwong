@@ -13,7 +13,7 @@ ESP32-S3 firmware
   └─ BSP/codec：RLCD、I2C、按键、ADC、ES7210/ES8311
 
 web (Svelte/Vite) ──构建──> SPIFFS /spiffs/www
-service (Go) ──> /worktime/summary、/ai/usage、/admin
+service (Go) ──> /worktime/summary、/ai/usage（无 Web 管理后台）
 RaceBox ─BLE─> firmware ─MQTT RBX2─> agentwong/emqx_pg_ingest ─> PostgreSQL
 firmware cached summaries ─HTTPS POST─> service context snapshot store
 XiaoZhi context provider ─HTTPS GET + device-id─> service ─> prompt dynamic_context
@@ -35,7 +35,7 @@ XiaoZhi context provider ─HTTPS GET + device-id─> service ─> prompt dynami
 - `weather_almanac_screen.cpp` 是天气黄历覆盖层：共享 RaceBox 弹窗的黑白卡片视觉语言，显示今天起 7 天、当前起 7 个小时和当天宜忌；温度与日期/小时由四个轻量文本行对象绘制，每列按字库实际像素宽度独立居中，避免双行标签在实屏上产生左对齐错觉，同时控制 128KB LVGL 对象池占用。按键任务维护主屏、日历翻页和天气黄历三种界面状态。
 - 显示内部使用 RGB565，flush 时阈值化为 1-bit 单色；非 8 像素宽图片按行补齐字节。
 - RaceBox 当前使用 64 条左右的小型 PSRAM 流式缓存，按 MQTT PUBACK 释放；RBX2 支持轨迹分段和稳定幂等键。
-- `racebox_enabled` 属于固件/开发板 Web 配置，不属于服务端 `/admin`：关闭时 RaceBox 服务入口、按键路由、顶栏对象和上下文字段共同停用，但配置与历史数据保留。按键任务根据该能力开关在 RaceBox 同步入口和 AI 用量页入口之间切换，为以后增加其他外接设备同步保留扩展点。
+- `racebox_enabled` 属于固件/开发板 Web 配置，不属于服务端 `conf/config.yml`：关闭时 RaceBox 服务入口、按键路由、顶栏对象和上下文字段共同停用，但配置与历史数据保留。按键任务根据该能力开关在 RaceBox 同步入口和 AI 用量页入口之间切换，为以后增加其他外接设备同步保留扩展点。
 - 语音上下文不直接从语音回调读取各业务组件，也不让公网服务回连设备。主任务从已经展示/持久化的工时、AI、天气黄历和 RaceBox 当日计数生成轻量快照，通过网络调度器合并上报；上报失败只保留待发送标志，不影响语音、UI 或原业务刷新。
 
 ## 3. Web 配置后台
@@ -49,12 +49,14 @@ XiaoZhi context provider ─HTTPS GET + device-id─> service ─> prompt dynami
 
 ## 4. Go 服务
 
-- `service/` 使用 Go 1.25，提供统一设备接口和独立 `/admin`。
-- 配置首次从 YAML 导入，之后以 `/app/data/settings.sqlite` 为准。
-- 敏感字段在 SQLite 中用 AES-256-GCM 加密；优先使用 `DESKWONG_SETTINGS_KEY`，否则生成同目录 0600 密钥文件。
+- `service/` 使用 Go 1.25，只提供统一设备接口；**没有 `/admin` 页面，也没有 `/api/settings`、`/api/restart`**。
+- 配置唯一来源是 `conf/config.yml`（`DESKWONG_CONFIG`，只读挂载）与容器环境变量，改完重启容器生效。样例见 `conf/config.yml.sample`。
+- SQLite 只保存小智上下文快照 `voice_context_snapshots`（`DESKWONG_DB`，默认 `/app/data/deskwong.sqlite`）。不再有配置表，也不需要 `DESKWONG_SETTINGS_KEY` 之类的加密密钥。
 - 工时源优先级：`DESKWONG_WORKTIME_UPSTREAM` → PingCode 网页 API → MySQL 兼容查询。
 - PingCode 登录令牌仅驻留内存；按月份分页拉取 `workload-logs/mine` 并按 `register_date` 聚合 `man_hour`。
-- AI 用量由同一 Go 服务容器的 provider adapter 层归一化：ChatGPT 读取 Codex auth；Devin 读取 CLI TOML 或 Desktop `state.vscdb` 并调用 Connect RPC，也支持 Web Bearer；MiMo 可读取 Desktop OAuth，也可由 Linux 容器直接持有加密 Refresh Token并调用官方 `/user/usage`，轮换凭据在 SQLite 设置写锁内持久化；Claude Code 暂接外部 API。统一输出 `apps[].windows[]`。服务端 `/admin` 保存最多两个启用应用、顺序、认证方式和各自刷新频率；调度器只实例化启用项，取消选择即停止后续轮询。固件只渲染归一化结果，不持有凭据。旧 `providers` 平铺响应仅作 ChatGPT 兼容输入。
+- AI 用量由同一 Go 服务容器的 provider adapter 层归一化：ChatGPT 读取 Codex auth；Devin 读取 CLI TOML 或 Desktop `state.vscdb` 并调用 Connect RPC，也支持 Web Bearer；MiMo 可读取 Desktop OAuth，也可由 Linux 容器直接持有 Refresh Token 并调用官方 `/user/usage`；Claude Code 暂接外部 API。统一输出 `apps[].windows[]`。
+- `ai_usage.providers` 在 `conf/config.yml` 里声明四个应用的 `enabled`、`order`、`auth_mode` 及对应凭据；服务端不轮询、不长期缓存，收到 `GET /ai/usage` 才并行实时查询启用的应用（整体限时 7s），失败时回退最近一次成功结果并标记 `stale`。MiMo 上游轮换下来的 Refresh Token 不能写回只读 conf，改存数据卷 `/app/data/ai_refresh_token.json`（可用 `DESKWONG_REFRESH_TOKEN_FILE` 覆盖），启动时覆盖 conf 里的初始值。
+- **“四选二”的展示选择权在开发板**：设备 NVS 保存选择的两个应用 id，主屏/AI 页/小智上下文都只渲染这两个，其余数据忽略。固件只渲染归一化结果，不持有凭据。旧 `providers` 平铺响应仅作 ChatGPT 兼容输入。
 - 服务保存按 `device-id` 隔离的最新开发板上下文快照，并提供小智上下文源 GET 接口。GET 只读本地快照，不同步扇出外部依赖，保证唤醒 Prompt 构建延迟稳定；上报鉴权和上下文读取鉴权使用独立用途的 Bearer Token。
 
 ## 5. 构建与发布

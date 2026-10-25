@@ -39,6 +39,9 @@ typedef struct {
     char aiusage_api_base[CFG_URL_MAX];
     char aiusage_token[CFG_STR_MAX];
     uint16_t aiusage_refresh_minutes;     // AI 用量刷新周期，分钟（最小 1）
+    /* 设备端「四选二」：展示哪两个 AI 应用，逗号分隔的应用 id（chatgpt/devin/claude/mimo），
+     * 顺序即主屏上下顺序；最多两个，留空时按服务端返回顺序取前两个。 */
+    char aiusage_apps[32];
     /* RaceBox MQTT */
     char mqtt_broker[CFG_URL_MAX];
     uint16_t mqtt_port;

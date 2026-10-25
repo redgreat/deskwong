@@ -90,7 +90,7 @@ func (a *App) contextReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	canonical, _ := json.Marshal(snap)
-	_, err = a.settings.Exec(`INSERT INTO voice_context_snapshots(device_id,observed_at,received_at,body) VALUES(?,?,?,?)
+	_, err = a.db.Exec(`INSERT INTO voice_context_snapshots(device_id,observed_at,received_at,body) VALUES(?,?,?,?)
 		ON CONFLICT(device_id) DO UPDATE SET observed_at=excluded.observed_at,received_at=excluded.received_at,body=excluded.body
 		WHERE excluded.observed_at >= voice_context_snapshots.observed_at`, snap.DeviceID, snap.ObservedAt, now, canonical)
 	if err != nil {
@@ -116,7 +116,7 @@ func (a *App) contextRead(w http.ResponseWriter, r *http.Request) {
 	}
 	var body []byte
 	var observed int64
-	if err := a.settings.QueryRow("SELECT observed_at,body FROM voice_context_snapshots WHERE device_id=?", deviceID).Scan(&observed, &body); err != nil {
+	if err := a.db.QueryRow("SELECT observed_at,body FROM voice_context_snapshots WHERE device_id=?", deviceID).Scan(&observed, &body); err != nil {
 		jsonReply(w, http.StatusNotFound, map[string]any{"code": 1404, "msg": "context not found"})
 		return
 	}

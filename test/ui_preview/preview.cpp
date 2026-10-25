@@ -82,8 +82,8 @@ int main(int argc,char **argv) {
     for (int day = 1; day <= calendar_month_days(2026, month); ++day)
         if (holiday_is_workday(2026, month, day)) expected += 8;
     ai_provider_t ai[4] = {};
-    strcpy(ai[0].app_id, "chatgpt"); strcpy(ai[0].app_name, "GPT"); strcpy(ai[0].app_status, "live"); strcpy(ai[0].label, "5时");
-    strcpy(ai[1].app_id, "chatgpt"); strcpy(ai[1].app_name, "GPT"); strcpy(ai[1].app_status, "live"); strcpy(ai[1].label, "周");
+    strcpy(ai[0].app_id, "chatgpt"); strcpy(ai[0].app_name, "ChatGPT"); strcpy(ai[0].app_status, "live"); strcpy(ai[0].label, "5时");
+    strcpy(ai[1].app_id, "chatgpt"); strcpy(ai[1].app_name, "ChatGPT"); strcpy(ai[1].app_status, "live"); strcpy(ai[1].label, "周");
     ai[0].remaining_percent = 72; ai[1].remaining_percent = 44; ai[0].observed_at = ai[1].observed_at = time(NULL);
     struct tm reset = {}; reset.tm_year=126; reset.tm_mon=8; reset.tm_mday=12; reset.tm_hour=18; reset.tm_min=30;
     ai[0].resets_at = mktime(&reset); reset.tm_mday=18; ai[1].resets_at=mktime(&reset);

@@ -103,7 +103,10 @@ func TestMiMoDesktopOAuthUsage(t *testing.T) {
 	}
 }
 
-func TestMiMoLinuxOAuthRotationIsEncryptedAndPersisted(t *testing.T) {
+/* 上游轮换下来的 Refresh Token 落在数据卷文件（conf 是只读挂载），
+ * 启动时由 loadPersistedRefreshTokens 覆盖 conf.yml 里的旧值。
+ * 过去这一步依赖 SQLite 里的可编辑配置 + /admin 后台，现已移除。 */
+func TestMiMoLinuxOAuthRotationIsPersisted(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/oauth":
@@ -125,42 +128,33 @@ func TestMiMoLinuxOAuthRotationIsEncryptedAndPersisted(t *testing.T) {
 	mimoOAuthURL, mimoUsageURL = server.URL+"/oauth", server.URL+"/usage"
 	defer func() { mimoOAuthURL, mimoUsageURL = oldOAuth, oldUsage }()
 
-	var cfg Config
-	normalizeAIConfig(&cfg)
-	for i := range cfg.AIUsage.Providers {
-		if cfg.AIUsage.Providers[i].ID == "mimo" {
-			cfg.AIUsage.Providers[i].RefreshToken = "initial-refresh"
-		}
-	}
-	store, err := openSettings(filepath.Join(t.TempDir(), "settings.sqlite"), cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	app := &App{client: server.Client(), settings: store}
+	refreshFile := filepath.Join(t.TempDir(), "ai_refresh_token.json")
+	t.Setenv("DESKWONG_REFRESH_TOKEN_FILE", refreshFile)
+
+	app := &App{client: server.Client()}
 	got, err := app.fetchMiMoOAuth(context.Background(), "initial-refresh")
 	if err != nil || got.Windows[0].RemainingPercent != 80 {
 		t.Fatalf("result=%+v err=%v", got, err)
 	}
-	saved, err := readSettings(store)
+	raw, err := os.ReadFile(refreshFile)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("轮换后的 refresh token 未落盘: %v", err)
 	}
-	var refresh string
-	for _, p := range saved.AIUsage.Providers {
+	if !strings.Contains(string(raw), "rotated-refresh") {
+		t.Fatalf("轮换结果未写入: %s", raw)
+	}
+	// 模拟重启：conf.yml 里的旧值应被数据卷中的轮换结果覆盖
+	var cfg Config
+	normalizeAIConfig(&cfg)
+	loadPersistedRefreshTokens(&cfg)
+	var reload string
+	for _, p := range cfg.AIUsage.Providers {
 		if p.ID == "mimo" {
-			refresh = p.RefreshToken
+			reload = p.RefreshToken
 		}
 	}
-	if refresh != "rotated-refresh" {
-		t.Fatalf("saved refresh token=%q", refresh)
-	}
-	var raw string
-	if err = store.QueryRow("SELECT body FROM settings WHERE id=1").Scan(&raw); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(raw, "initial-refresh") || strings.Contains(raw, "rotated-refresh") {
-		t.Fatal("MiMo refresh token was stored in plaintext")
+	if reload != "rotated-refresh" {
+		t.Fatalf("重启后载入的 refresh token=%q", reload)
 	}
 }
 
@@ -185,6 +179,55 @@ func TestExternalAIAdapterPreservesZeroAndStatus(t *testing.T) {
 	body, err := json.Marshal(got)
 	if err != nil || !containsJSONField(body, `"remaining_percent":0`) {
 		t.Fatalf("zero quota omitted: %s err=%v", body, err)
+	}
+}
+
+/* 服务端不轮询上游、不长期缓存：/ai/usage 每次被请求时才实时查启用应用，
+ * 失败时回退最近一次成功结果并标记 stale。 */
+func TestAIUsageFetchesUpstreamOnRequest(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		_, _ = w.Write([]byte(`{"code":0,"data":{"apps":[{"id":"devin","name":"Devin","status":"live","windows":[{"id":"daily","label":"日","remaining_percent":61}]}]}}`))
+	}))
+	defer upstream.Close()
+
+	var cfg Config
+	normalizeAIConfig(&cfg)
+	for i := range cfg.AIUsage.Providers {
+		p := &cfg.AIUsage.Providers[i]
+		p.Enabled = p.ID == "devin"
+		if p.ID == "devin" {
+			p.AuthMode = "external_api"
+			p.APIBase = upstream.URL
+		}
+	}
+	if err := validateAIConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{cfg: cfg, client: upstream.Client()}
+
+	rec := httptest.NewRecorder()
+	app.aiUsage(rec, httptest.NewRequest(http.MethodGet, "/ai/usage", nil))
+	if rec.Code != 200 || calls.Load() != 1 {
+		t.Fatalf("code=%d calls=%d body=%s", rec.Code, calls.Load(), rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"remaining_percent":61`) {
+		t.Fatalf("missing live quota: %s", rec.Body.String())
+	}
+
+	/* 不缓存：第二次请求必须再次实时查上游，而不是回放上次结果 */
+	app.aiUsage(rec, httptest.NewRequest(http.MethodGet, "/ai/usage", nil))
+	if calls.Load() != 2 {
+		t.Fatalf("second request calls=%d (must not serve from cache)", calls.Load())
+	}
+
+	/* 上游不可用：整体仍返回 200，该应用回退最近一次成功结果并标记 stale */
+	upstream.Close()
+	rec = httptest.NewRecorder()
+	app.aiUsage(rec, httptest.NewRequest(http.MethodGet, "/ai/usage", nil))
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"status":"stale"`) {
+		t.Fatalf("stale fallback code=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

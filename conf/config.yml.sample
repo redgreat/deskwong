@@ -1,20 +1,63 @@
-# 首次启动导入 SQLite；之后以 /admin 后台为准，重启服务生效。
+# 服务唯一配置源：只在本文件（或 docker-compose 环境变量）里改，改完重启容器生效。
+# 没有 /admin 后台：AI 应用的选择与展示改由开发板网页后台决定（四选二）。
 server:
   listen: ":8001"
   # 设备调用 /worktime/summary、/ai/usage 用的固定 Bearer Token（设备后台填同一个值）
   token: "change-me"
-  # /admin 管理后台登录账号密码
-  username: "admin"
-  password: "admin"    # 部署后请立即在 /admin 里改掉
 
 log:
   level: "info"   # debug | info | warn | error；可被环境变量 DESKWONG_LOG_LEVEL 覆盖
   format: "text"  # text | json；可被环境变量 DESKWONG_LOG_FORMAT 覆盖
 
+context:
+  # 小智上下文上报/读取 Token；留空时回落到 server.token，生产环境务必设置两个不同的随机值
+  report_token: ""
+  read_token: ""
+
 worktime:
-  # PingCode 工时数据源：只在本文件配置，不进 /admin；改后重启服务生效
   pingcode:
     base_url: ""
     username: ""
     password: ""
     timeout_sec: 20
+
+# AI 用量：这里只决定哪些应用可用（enabled），服务端不轮询不缓存，
+# 开发板（或网页后台）每次 GET /ai/usage 时才实时查询上游；
+# 开发板网页后台再从返回的应用里挑两个显示（四选二）。不想查询的直接 enabled: false。
+ai_usage:
+  providers:
+    # ChatGPT/Codex：读取 DESKWONG_CODEX_AUTH_FILE（默认 ~/.codex/auth.json）
+    - id: "chatgpt"
+      enabled: true
+      order: 0
+      auth_mode: "client_login"
+
+    # Devin：client_login 读取客户端登录态；manual_token 需要组织 ID + Bearer Token
+    - id: "devin"
+      enabled: false
+      order: 1
+      auth_mode: "manual_token"
+      username: ""      # 组织 ID
+      api_token: ""     # Bearer Token
+
+    # Claude Code：外部 API 模式，需要 api_base（也可改成 password 模式填账号密码）
+    - id: "claude"
+      enabled: false
+      order: 2
+      auth_mode: "external_api"
+      api_base: ""
+
+    # MiMo Desktop：client_login 读客户端登录态；oauth_refresh 只在这里填初始 refresh token，
+    # 上游轮换后的新 token 会写入数据卷 /app/data/ai_refresh_token.json（conf 是只读挂载）
+    - id: "mimo"
+      enabled: false
+      order: 3
+      auth_mode: "oauth_refresh"
+      refresh_token: ""
+
+# auth_mode 取值说明：
+#   client_login  服务容器本机客户端登录态（chatgpt / devin / mimo）
+#   manual_token  Devin 组织 ID + Bearer Token（username + api_token）
+#   oauth_refresh MiMo OAuth Refresh Token（refresh_token）
+#   password      账号 + 密码 + API 地址（username + password + api_base）
+#   external_api  外部 API 地址（api_base）

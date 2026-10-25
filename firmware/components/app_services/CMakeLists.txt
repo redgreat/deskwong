@@ -1,6 +1,6 @@
 idf_component_register(
     SRCS "time_service.cpp" "time_util.c" "sensor_service.cpp" "http_util.c" "puff.c"
-         "weather_service.c" "worktime_service.c" "aiusage_service.c"
+         "weather_service.c" "worktime_service.c" "aiusage_service.c" "aiusage_pick.c"
          "voice_context_service.c"
          "net_scheduler.c"
          "calendar_service.c" "reminder_service.c" "holiday_service.c"

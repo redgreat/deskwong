@@ -151,6 +151,7 @@ static esp_err_t config_get_handler(httpd_req_t *req) {
     cJSON_AddStringToObject(d, "aiusage_api_base", stored.aiusage_api_base);
     cJSON_AddStringToObject(d, "aiusage_token", stored.aiusage_token[0] ? "******" : "");
     cJSON_AddNumberToObject(d, "aiusage_refresh_minutes", stored.aiusage_refresh_minutes);
+    cJSON_AddStringToObject(d, "aiusage_apps", stored.aiusage_apps);
     cJSON_AddStringToObject(d, "mqtt_broker", stored.mqtt_broker);
     cJSON_AddNumberToObject(d, "mqtt_port", stored.mqtt_port);
     cJSON_AddStringToObject(d, "mqtt_user", stored.mqtt_user);
@@ -199,6 +200,48 @@ static void set_str_field(cJSON *j, const char *key, char *dst, size_t len) {
         strncpy(dst, it->valuestring, len - 1);
         dst[len - 1] = 0;
     }
+}
+
+/* 设备端「四选二」的四个可选应用，与服务端 ai_usage 目录一致 */
+static const char *k_ai_app_ids[] = {"chatgpt", "devin", "claude", "mimo"};
+static const char *k_ai_app_names[] = {"ChatGPT", "Devin", "Claude", "MiMo"};
+#define AI_APP_COUNT 4
+
+/* 归一化展示应用选择：只接受四个已知 id，去重后最多保留两个，写成 "a,b" */
+static void set_ai_apps_field(cJSON *j, char *dst, size_t len) {
+    cJSON *it = cJSON_GetObjectItem(j, "aiusage_apps");
+    if (!it) return;
+    const char *picked[2] = {NULL, NULL};
+    int n = 0;
+    auto take = [&](const char *tok) {
+        if (n >= 2 || !tok || !tok[0]) return;
+        for (int k = 0; k < AI_APP_COUNT; ++k) {
+            if (strcmp(tok, k_ai_app_ids[k]) != 0) continue;
+            for (int q = 0; q < n; ++q) if (strcmp(picked[q], tok) == 0) return;
+            picked[n++] = k_ai_app_ids[k];
+            return;
+        }
+    };
+    if (cJSON_IsArray(it)) {
+        cJSON *item;
+        cJSON_ArrayForEach(item, it) {
+            if (cJSON_IsString(item)) take(item->valuestring);
+        }
+    } else if (cJSON_IsString(it)) {
+        char buf[32];
+        strncpy(buf, it->valuestring, sizeof(buf) - 1);
+        buf[sizeof(buf) - 1] = 0;
+        char *save = NULL;
+        for (char *tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
+            while (*tok == ' ') tok++;
+            size_t l = strlen(tok);
+            while (l > 0 && tok[l - 1] == ' ') tok[--l] = 0;
+            take(tok);
+        }
+    }
+    if (n == 0) picked[n++] = k_ai_app_ids[0];
+    snprintf(dst, len, "%s%s%s", picked[0], n > 1 ? "," : "", n > 1 ? picked[1] : "");
+    dst[len - 1] = 0;
 }
 
 static esp_err_t config_put_handler(httpd_req_t *req) {
@@ -293,6 +336,7 @@ static esp_err_t config_put_handler(httpd_req_t *req) {
         if (minutes > 1440) minutes = 1440;
         pending.aiusage_refresh_minutes = (uint16_t)minutes;
     }
+    set_ai_apps_field(j, pending.aiusage_apps, sizeof(pending.aiusage_apps));
     set_str_field(j, "mqtt_broker", pending.mqtt_broker, sizeof(pending.mqtt_broker));
     set_str_field(j, "racebox_upload_topic", pending.racebox_upload_topic, sizeof(pending.racebox_upload_topic));
     set_str_field(j, "racebox_device_name", pending.racebox_device_name, sizeof(pending.racebox_device_name));
@@ -404,6 +448,55 @@ static esp_err_t config_put_handler(httpd_req_t *req) {
         return send_err(req, 0, msg);
     }
     return send_err(req, 0, "MQTT 已关闭，配置已保存，RaceBox 设置立即生效");
+}
+
+/* 设备后台的 AI 用量实时视图：返回本机已选应用的窗口数据，供网页画进度条。
+ * 数据来自主任务最后一次成功拉取并已按「四选二」过滤的缓存，这里不做任何网络请求。 */
+static esp_err_t ai_handler(httpd_req_t *req) {
+    if (!authed(req)) return send_err(req, 401, "unauthorized");
+    const ai_provider_t *items = NULL;
+    int count = aiusage_service_cached(&items);
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddNumberToObject(o, "code", 0);
+    cJSON_AddStringToObject(o, "message", "ok");
+    cJSON *d = cJSON_CreateObject();
+    cJSON_AddStringToObject(d, "selected", s_cfg->aiusage_apps);
+    cJSON *cat = cJSON_AddArrayToObject(d, "catalog");
+    for (int k = 0; k < AI_APP_COUNT; ++k) {
+        cJSON *c = cJSON_CreateObject();
+        cJSON_AddStringToObject(c, "id", k_ai_app_ids[k]);
+        cJSON_AddStringToObject(c, "name", k_ai_app_names[k]);
+        cJSON_AddItemToArray(cat, c);
+    }
+    cJSON *apps = cJSON_AddArrayToObject(d, "apps");
+    for (int i = 0; i < count;) {
+        const char *id = items[i].app_id[0] ? items[i].app_id : "chatgpt";
+        cJSON *app = cJSON_CreateObject();
+        cJSON_AddStringToObject(app, "id", id);
+        cJSON_AddStringToObject(app, "name", items[i].app_name[0] ? items[i].app_name : id);
+        cJSON_AddStringToObject(app, "status", items[i].app_status[0] ? items[i].app_status : "unavailable");
+        if (items[i].observed_at > 0)
+            cJSON_AddNumberToObject(app, "observed_at", (double)items[i].observed_at);
+        cJSON *wins = cJSON_AddArrayToObject(app, "windows");
+        for (; i < count; ++i) {
+            const char *cur = items[i].app_id[0] ? items[i].app_id : "chatgpt";
+            if (strcmp(cur, id) != 0) break;
+            cJSON *w = cJSON_CreateObject();
+            cJSON_AddStringToObject(w, "id", items[i].id);
+            cJSON_AddStringToObject(w, "label", items[i].label);
+            cJSON_AddNumberToObject(w, "window_minutes", items[i].window_minutes);
+            if (items[i].remaining_percent >= 0)
+                cJSON_AddNumberToObject(w, "remaining_percent", items[i].remaining_percent);
+            if (items[i].resets_at > 0)
+                cJSON_AddNumberToObject(w, "resets_at", (double)items[i].resets_at);
+            cJSON_AddItemToArray(wins, w);
+        }
+        cJSON_AddItemToArray(apps, app);
+    }
+    cJSON_AddItemToObject(o, "data", d);
+    esp_err_t err = send_json(req, 0, o);
+    cJSON_Delete(o);
+    return err;
 }
 
 /* 语音调试端点：异步请求启动（会话建立含 OTA TLS 握手，固定跑在专用大栈任务上，
@@ -634,6 +727,8 @@ esp_err_t http_server_start(app_config_t *cfg) {
     uri.uri = "/api/config";      uri.method = HTTP_GET;    uri.handler = config_get_handler;
     httpd_register_uri_handler(server, &uri);
     uri.uri = "/api/config";      uri.method = HTTP_PUT;    uri.handler = config_put_handler;
+    httpd_register_uri_handler(server, &uri);
+    uri.uri = "/api/ai";          uri.method = HTTP_GET;    uri.handler = ai_handler;
     httpd_register_uri_handler(server, &uri);
     uri.uri = "/api/system/restart";       uri.method = HTTP_POST; uri.handler = restart_handler;
     httpd_register_uri_handler(server, &uri);

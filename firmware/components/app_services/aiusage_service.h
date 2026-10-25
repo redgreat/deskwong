@@ -26,6 +26,14 @@ void aiusage_service_init(const char *base, const char *token);
 /* 拉取 AI 用量 providers，成功返回 0 */
 int aiusage_service_fetch(ai_provider_t *out, int max, int *count);
 
+/* 设备端「四选二」：selected 是逗号分隔的应用 id 白名单（最多两个，顺序即屏显上下顺序）。
+ * 原地压缩 items 并返回过滤后的条数；白名单为空或都没命中时退化为服务端顺序的前两个应用。 */
+int aiusage_service_pick(ai_provider_t *items, int count, const char *selected);
+
+/* 缓存最近一次拉取的完整结果（不按设备端选择过滤），供设备 Web 后台 /api/ai 预览所有应用 */
+void aiusage_service_publish(const ai_provider_t *items, int count);
+int aiusage_service_cached(const ai_provider_t **out);
+
 #ifdef __cplusplus
 }
 #endif

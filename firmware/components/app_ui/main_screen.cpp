@@ -241,6 +241,22 @@ static void update_ai_layout(const ai_provider_t *ai, int count) {
         lv_obj_set_pos(s_ai_icon[0], 326, 205);
         set_ai_object_visible(s_ai_icon[0], true);
         set_ai_object_visible(s_ai_icon[1], false);
+        /* 图标右侧补回应用短名：b2e6868 重构成多应用布局时把这块文字删掉了，单个应用时
+         * 只剩孤立图标、看不出是哪个应用。优先用服务端 apps[].name（桌面短名，如 ChatGPT），
+         * 完全取不到数据时沿用旧的占位文案「额度」。文字复用双应用布局空出来的 s_ai[2]。 */
+        const char *nm = "额度";
+        int first = windows[0][0] >= 0 ? windows[0][0] : windows[0][1];
+        if (first >= 0) {
+            if (ai[first].app_name[0]) nm = ai[first].app_name;
+            else if (ai[first].name[0]) nm = ai[first].name;
+        }
+        lv_obj_set_pos(s_ai[2], 353, 209);
+        lv_obj_set_width(s_ai[2], 47);
+        text_changed(s_ai[2], nm);
+        set_ai_object_visible(s_ai[2], true);
+        /* 名称行只占标签本身，同槽位的窗口小标签和进度条要藏起来 */
+        set_ai_object_visible(s_ai_window[2], false);
+        set_ai_object_visible(lv_obj_get_parent(s_ai_fill[2]), false);
         for (int i = 0; i < 2; ++i) {
             int index = app_count ? windows[0][i] : -1;
             lv_obj_set_pos(s_ai_window[i], 315, i ? 270 : 235);
@@ -253,12 +269,13 @@ static void update_ai_layout(const ai_provider_t *ai, int count) {
             set_ai_object_visible(s_ai_window[i], true); set_ai_object_visible(s_ai[i], true);
             set_ai_object_visible(lv_obj_get_parent(s_ai_fill[i]), true);
         }
-        for (int i = 2; i < 4; ++i) {
-            set_ai_object_visible(s_ai_window[i], false); set_ai_object_visible(s_ai[i], false);
-            set_ai_object_visible(lv_obj_get_parent(s_ai_fill[i]), false);
-        }
+        /* 第二张紧凑卡整体隐藏；s_ai[2] 上面已借用作名称行，不能再隐藏 */
+        set_ai_object_visible(s_ai_window[3], false); set_ai_object_visible(s_ai[3], false);
+        set_ai_object_visible(lv_obj_get_parent(s_ai_fill[3]), false);
         return;
     }
+    /* 双应用是上下两张紧凑卡，图标与首行窗口已同排，没有多余横向空间放名称，
+     * 靠各自的品牌图标区分；s_ai[2] 在这里回到第二个应用首窗口的本职。 */
     for (int app = 0; app < 2; ++app) {
         int base_y = app ? 250 : 205;
         lv_img_set_src(s_ai_icon[app], ai_provider_icon(ids[app], 16));
@@ -448,6 +465,9 @@ void main_screen_init(int width, int height) {
         lv_obj_set_style_img_recolor(s_ai_icon[app], lv_color_black(), 0);
         lv_obj_set_style_img_recolor_opa(s_ai_icon[app], LV_OPA_COVER, 0);
     }
+    /* 单应用时图标右侧的应用短名不新建对象：复用下面双应用布局里空出来的
+     * s_ai[2] 槽位（update_ai_layout 会改它的位置和宽度）。LVGL 对象池只有 128KB，
+     * 多建一个标签就会顶到上限，而单/双应用两套布局互斥，槽位一定能腾出来。 */
     const int wy[4] = {235, 270, 216, 260};
     for (int i = 0; i < 4; ++i) {
         s_ai_window[i] = label(scr, i % 2 ? "周" : "5时", &lv_font_zh_10, 315, wy[i]);

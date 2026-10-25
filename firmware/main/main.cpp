@@ -85,8 +85,14 @@ static app_config_t g_cfg;
 static weather_now_t g_weather;
 static weather_detail_t g_weather_detail;
 static worktime_summary_t g_worktime;
+/* g_ai_raw 是 /ai/usage 的原始结果（服务端可能返回四个应用）；
+ * g_ai 是按设备端「四选二」过滤后的视图，主屏、AI 独立页和小智上下文都只用它。 */
+static ai_provider_t g_ai_raw[AI_MAX_PROVIDERS];
+static int g_ai_raw_count = 0;
 static ai_provider_t g_ai[AI_MAX_PROVIDERS];
 static int g_ai_count = 0;
+/* 最近一次生效过的选择，用于在后台改配置后立刻重排，不用等下一个刷新周期 */
+static char g_ai_apps_applied[32] = "";
 static float g_temp = 0, g_humi = 0;
 static uint8_t g_battery = 0;
 static volatile bool g_summary_dirty = false;
@@ -261,8 +267,22 @@ static void job_worktime(void *ctx) {
     net_scheduler_request(NET_JOB_VOICE_CONTEXT);
 }
 
+/* 按设备端「四选二」配置从原始结果里挑出要展示的应用，并刷新后台可读的缓存 */
+static void apply_ai_selection(void) {
+    strncpy(g_ai_apps_applied, g_cfg.aiusage_apps, sizeof(g_ai_apps_applied) - 1);
+    g_ai_apps_applied[sizeof(g_ai_apps_applied) - 1] = 0;
+    memcpy(g_ai, g_ai_raw, sizeof(g_ai_raw[0]) * (size_t)g_ai_raw_count);
+    g_ai_count = aiusage_service_pick(g_ai, g_ai_raw_count, g_ai_apps_applied);
+    /* /api/ai 缓存的是服务端原始结果（未按四选二过滤），网页才能预览全部应用的实时用量；
+     * 已选的两个只决定桌面画哪几个，不影响这里 */
+    aiusage_service_publish(g_ai_raw, g_ai_raw_count);
+}
+
 static void job_aiusage(void *ctx) {
-    aiusage_service_fetch(g_ai, AI_MAX_PROVIDERS, &g_ai_count);
+    (void)ctx;
+    /* 拉取失败时 fetch 不会改写缓冲区和计数，这里沿用上一次成功的数据（屏幕显示陈旧值） */
+    aiusage_service_fetch(g_ai_raw, AI_MAX_PROVIDERS, &g_ai_raw_count);
+    apply_ai_selection();
     g_summary_dirty = true;
     net_scheduler_request(NET_JOB_VOICE_CONTEXT);
 }
@@ -458,6 +478,13 @@ static void ui_update_task(void *arg) {
                 main_screen_update_calendar(cells);
                 Lvgl_unlock();
             }
+        }
+
+        /* 后台改了「四选二」：立即用原始数据重排并重画，不用等下一次网络刷新 */
+        if (strcmp(g_ai_apps_applied, g_cfg.aiusage_apps) != 0) {
+            apply_ai_selection();
+            g_summary_dirty = true;
+            ESP_LOGI(TAG, "ai selection changed -> %s", g_ai_apps_applied);
         }
 
         /* 每秒：提醒轮询 + 时间/状态刷新 */

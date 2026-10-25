@@ -19,7 +19,7 @@
 | 音量分离与普通操作音量 | 源码、集中测试、构建、COM7 刷写完成，三次实机反馈后定稿 | 后台「音量」改名「智能语音音量」（只影响小智 TTS），新增「普通操作音量」`system_volume`（默认 60，NVS `sys_vol`）。迭代记录：① 初版把铃声单独接到 `voice_volume`；② 用户反馈签退仍像 100，改为按 `cue_vol × system_volume / 60` 缩放且铃声 cue 取 80，实际仍 ≈93；③ 改为**除小智外所有声音一律按 `system_volume` 原值播放**，用户反馈铃声仍比按键音大很多，最终删除独立波形幅度 `RING_AMPLITUDE`，让提醒铃声与按键音/开关机音/RaceBox 提示音**音量和波形幅度完全一致**（都走 `tone()` → 9000），只用约 1 秒旋律和高低音组合区分。保存后经 `audio_service_set_system_volume` 热生效；语音区与停留时长相关小字提示全部移除；`test/run.ps1` 增加普通操作音量配置、音量分路、铃声不得再有独立音量或波形幅度的源码检查；Web 与 ESP-IDF 构建通过；2026-10-15 COM7 全量刷写各分区 Hash verified，设备 app_desc ELF SHA256 `093d408992365dea…` 与本地 `build/deskwong.elf` 一致，启动日志 `system cue volume=60`，ota_0 启动、天气/工时/AI 用量/语音上报正常，无复位 | 用户复测：智能语音 100 / 普通操作 70 时，签退等提醒铃声应与按键音同级（明显轻于小智 TTS）；小智 TTS 只随「智能语音音量」变化 |
 | 日历翻页与天气黄历弹窗 | `℃` 与逐行居中已修改、测试、构建并刷写，待实屏观感确认 | 天气温度统一为 `℃`（U+2103）并补入 10/14/20px 字库和字体审计；废除温度+日期/小时双行标签，改用四个轻量文本行对象，每列按实际像素宽度在 52px 内独立定位。集中测试与 8 个生产 LVGL 状态渲染通过，UI 池占用约 108.5KB/128KB、余约 22.5KB；2026-10-05 完整刷入 COM7，各分区 Hash verified，设备 app_desc SHA256 与本次 ELF `993dddeb...fa825` 一致，从 ota_0 启动、首帧和真实天气刷新成功，持续约 30 秒无复位循环 | 用户短按 BOOT 查看实屏，确认 `℃` 观感、温度/日期/时刻逐列居中和无方块字；网络刷新期间历史上曾偶发 `display transfer queue failed: ESP_ERR_NO_MEM`，仍需单独做显示队列/内部内存诊断 |
 | 日历自动返回复位 | 根因已修复并刷写，待用户触发板测 | 自动返回和网络失败路径原本都可能从 PSRAM 栈直接读 NVS；现已把所有工时缓存 NVS 读写统一代理到内部 RAM `wt_cache` 任务，集中测试与 IDF 构建通过；COM7 启动时真实缓存读取成功，设备无启动复位 | 长按 KEY 进入翻页模式并等待 15 秒，确认日志出现 `calendar browse timeout -> main month`、界面返回主屏且之后持续运行无复位；未获得按键触发前不宣称业务验收完成 |
-| AI 用量 | 源码、协议级测试、Web 与固件构建完成，尚未部署/刷机/账号实测 | Docker 服务已实现四选一至二、仅启用项轮询、加密配置和缓存 API；ChatGPT 读取 Codex 登录态；Devin 可读取 `credentials.toml` 调用 Connect RPC `GetUserStatus`，或在 Linux 后台用组织 ID + Bearer Token 调用官方 Web 日/周额度接口；MiMo 可读取 `mimocode/auth.json`，也可在 Linux 后台保存 OAuth Refresh Token，自动刷新 access token并加密持久化轮换 Token，再调用 Desktop 官方 `/user/usage`；基础 Compose 不再强制挂载 Devin/MiMo 桌面目录；Claude Code 仍保留外部 API。单/双应用主屏和 AI 独立页生产预览、字库审计、UI 池安全线、集中测试及 ESP-IDF 构建均通过 | 发布并部署新镜像；Devin 用现有账号核对日/周百分比与重置时间。MiMo 当前无登录会员，购买后取得 Refresh Token并核对官方页面与设备值；获授权后刷机验收 |
+| AI 用量 | 源码、协议级测试、Web 与固件构建完成，尚未部署/刷机/账号实测 | Docker 服务已实现按请求实时查询（不轮询、不缓存）、四选二由设备侧决定；ChatGPT 读取 Codex 登录态；Devin 可读取 `credentials.toml` 调用 Connect RPC `GetUserStatus`，或在 Linux 后台用组织 ID + Bearer Token 调用官方 Web 日/周额度接口；MiMo 可读取 `mimocode/auth.json`，也可在 Linux 后台保存 OAuth Refresh Token，自动刷新 access token并加密持久化轮换 Token，再调用 Desktop 官方 `/user/usage`；基础 Compose 不再强制挂载 Devin/MiMo 桌面目录；Claude Code 仍保留外部 API。单/双应用主屏和 AI 独立页生产预览、字库审计、UI 池安全线、集中测试及 ESP-IDF 构建均通过 | 发布并部署新镜像；Devin 用现有账号核对日/周百分比与重置时间。MiMo 当前无登录会员，购买后取得 Refresh Token并核对官方页面与设备值；获授权后刷机验收 |
 | AI 用量品牌与独立页 | 源码与生产预览完成，待设备验收 | 四个 provider 的 32/24/16px 1-bit 图标已生成；主屏单选保留大卡、双选切换双紧凑卡；RaceBox 关闭时 KEY 短按打开 380×264 AI 自绘详情页。单/双应用、缓存状态、字库与 UI 池测试通过，余约 16.6KB | 获授权后刷机，逐个选择已有账号的应用核对图标、百分比、重置时间和 KEY 页面 |
 | RaceBox RBX2 | 源码与主机测试完成 | 流式缓存、RBX2/CRC/幂等主机测试 | IDF 构建、刷写、完整设备同步 |
 | RaceBox 同步显示开关与 KEY 重映射 | 源码、集中测试和构建完成，默认开启，待设备验收 | `racebox_enabled` 已加入 NVS/API/Web；关闭会停止入口、隐藏顶栏状态和点数、停止上下文上报并把 KEY 短按映射到 AI 页，配置与历史保留。长按日历、提醒优先、BOOT 天气和 BOOT+PWR 语义不变 | 获授权后刷机；默认开启回归现有同步，再临时关闭核对顶栏、KEY、天气/AI 互斥和同步中关闭 |
@@ -34,7 +34,7 @@
 - [x] Go 格式化、单元测试、vet
 - [x] PingCode 只读真实数据验证
 - [x] WiFi 断线原因码日志与 BOOT 长按配网（源码 + 主机测试）
-- [x] SQLite 敏感字段 AES-GCM 与脱敏回读
+- [x] 服务端 `/admin` 与 `/api/settings` 全部移除，配置收敛到 `conf/config.yml`
 - [x] GHCR amd64/arm64 清单
 - [ ] Quay amd64/arm64 清单
 - [x] 最新固件 IDF 构建

@@ -7,7 +7,7 @@
 - Unix 时间戳均为秒；设备默认 `Asia/Shanghai`，协议中的 UTC 字段按名称解释。
 - 所有 URL 明确 scheme；敏感外部请求只允许 HTTPS，局域网设备 API 除外。
 - 日志不得输出密码、Token、Cookie、精确轨迹明细；允许输出状态、数量、耗时和脱敏标识。
-- 设备配置使用 NVS，服务配置使用 SQLite。敏感字段加密存储，`******` 只表示保留旧值。
+- 设备配置使用 NVS（开发板 Web 后台读写），服务配置使用只读挂载的 `conf/config.yml` 加容器环境变量；服务没有 Web 管理后台，也没有配置表。设备侧敏感字段脱敏回读为 `******`。
 - MQTT 数据使用 QoS 1；接收端必须幂等，不能以 publish 调用返回代替 PUBACK。
 
 ## 2. HTTP 契约
@@ -24,21 +24,23 @@
 
 ### 2.2 AI 用量
 
-`GET {base}/ai/usage`，Bearer 鉴权。返回按 Web 后台顺序排列、最多两个已启用应用；每个应用包含稳定 `id`、桌面短名 `name`、状态与最多两个主要窗口。窗口使用稳定 `id`、短标签 `label`、`remaining_percent` 与 `resets_at`；`remaining_percent` 为 0～100 的剩余百分比，未知时省略，`resets_at` 为 Unix 秒，未知时省略。`status` 取 `live`、`cached`、`stale`、`unavailable`，缓存状态可附 `observed_at`。
+`GET {base}/ai/usage`，Bearer 鉴权。返回服务端所有 `enabled` 应用（最多四个），按服务配置 `order` 升序排列；每个应用包含稳定 `id`、桌面短名 `name`、状态与最多两个主要窗口。设备按自身 NVS 里“四选二”的选择过滤后再渲染。窗口使用稳定 `id`、短标签 `label`、`remaining_percent` 与 `resets_at`；`remaining_percent` 为 0～100 的剩余百分比，未知时省略，`resets_at` 为 Unix 秒，未知时省略。`status` 取 `live`、`cached`、`stale`、`unavailable`，缓存状态可附 `observed_at`。
 
 ```json
 {"code":0,"data":{"apps":[{"id":"chatgpt","name":"GPT","status":"live","windows":[{"id":"chatgpt_5h","label":"5时","window_minutes":300,"remaining_percent":72,"resets_at":1789223400},{"id":"chatgpt_weekly","label":"周","window_minutes":10080,"remaining_percent":44,"resets_at":1789741800}]},{"id":"devin","name":"Devin","status":"cached","observed_at":1792809000,"windows":[{"id":"devin_daily","label":"日","remaining_percent":61,"resets_at":1792828800},{"id":"devin_weekly","label":"周","remaining_percent":28,"resets_at":1793260800}]}]}}
 ```
 
-兼容期内聚合服务可继续接受旧 `providers` 平铺结构并归入 `chatgpt` 应用，但新固件和服务以 `apps[].windows[]` 为主契约。桌面只消费响应中的前两个已配置应用；服务端必须在保存配置时完成“四选二”校验，不能依赖设备截断。厂商会员额度若只能从本机登录态或未公开只读接口取得，适配器运行在自建服务所在主机，凭据只读挂载或通过只写配置注入；日志、响应和缓存不得包含 Token、Cookie、账号标识或客户端数据库内容。
+兼容期内聚合服务可继续接受旧 `providers` 平铺结构并归入 `chatgpt` 应用，但新固件和服务以 `apps[].windows[]` 为主契约。服务端不对启用数量做“四选二”限制，桌面消费响应时按设备 NVS 里保存的两个应用 id 过滤，不能只取响应前两个。厂商会员额度若只能从本机登录态或未公开只读接口取得，适配器运行在自建服务所在主机，凭据只读挂载或通过只写配置注入；日志、响应和缓存不得包含 Token、Cookie、账号标识或客户端数据库内容。
 
-服务端 `/admin` 的 AI 应用配置至少包含：稳定应用 `id`、`enabled`、显示 `order`、`refresh_minutes`、认证方式 `auth_mode` 及对应配置。`client_login` 读取只读挂载的 Codex、Devin 或 MiMo 登录态；Devin `manual_token` 保存组织 ID 与加密 Bearer Token；MiMo `oauth_refresh` 保存加密 Refresh Token；`password`/`external_api` 保留给兼容适配服务。保存时必须原子校验：启用项恰好一至两个、顺序不重复、刷新频率为 1～1440、所选认证方式字段完整；失败不得部分生效。
+服务端 `conf/config.yml` 的 `ai_usage.providers` 至少包含：稳定应用 `id`、`enabled`、显示 `order`、认证方式 `auth_mode` 及对应配置。`client_login` 读取只读挂载的 Codex、Devin 或 MiMo 登录态；Devin `manual_token` 保存组织 ID 与 Bearer Token；MiMo `oauth_refresh` 保存 Refresh Token；`password`/`external_api` 保留给兼容适配服务。启动时必须原子校验：四个 id 齐全且不重复、已启用项顺序不重复、所选认证方式字段完整、监听地址与 `server.token` 合法；校验失败直接退出，不允许带着半套配置启动。
 
 Devin 客户端登录态模式读取 `credentials.toml` 的 `windsurf_api_key` 与可选 `api_server_url`，调用 `POST {api_server_url}/exa.seat_management_pb.SeatManagementService/GetUserStatus`，使用 `dailyQuotaRemainingPercent`、`weeklyQuotaRemainingPercent` 及对应 Unix 重置时间。手动令牌模式调用 `GET https://app.devin.ai/api/{organization}/billing/quota/usage`，把返回的已用百分比换算为剩余百分比，并遵守 `hide_daily_quota`。
 
-MiMo Desktop 登录态模式读取 `auth.json.xiaomi`；Linux `oauth_refresh` 模式直接读取后台加密保存的 Refresh Token。两者都调用 `https://account.xiaomi.com/oauth2/token` 获取短期 access token，再调用 `GET https://mimo-server-cn.xiaomimimo.com/api/user/usage`。`oauth_refresh` 收到轮换后的 Refresh Token 时必须在与后台保存互斥的临界区内加密写回 SQLite；写入失败时本次刷新报错，不能假装持久化成功。该接口的 `percent` 是当前会员窗口已用百分比，`resetDate` 是重置时间，桌面显示 `100-percent`。MiMo Token Plan 与 Desktop 会员是两套独立额度，不能用本地数据库 Token 数或 Token Plan 额度冒充 Desktop 会员剩余额度。
+MiMo Desktop 登录态模式读取 `auth.json.xiaomi`；Linux `oauth_refresh` 模式读取 `conf/config.yml` 里的初始 Refresh Token。两者都调用 `https://account.xiaomi.com/oauth2/token` 获取短期 access token，再调用 `GET https://mimo-server-cn.xiaomimimo.com/api/user/usage`。`oauth_refresh` 收到轮换后的 Refresh Token 时必须在与刷新互斥的临界区内原子写回数据卷 `ai_refresh_token.json`（conf 为只读挂载，不能写回）；写入失败时本次刷新报错，不能假装持久化成功。该接口的 `percent` 是当前会员窗口已用百分比，`resetDate` 是重置时间，桌面显示 `100-percent`。MiMo Token Plan 与 Desktop 会员是两套独立额度，不能用本地数据库 Token 数或 Token Plan 额度冒充 Desktop 会员剩余额度。
 
-轮询调度以启用集合为唯一来源。配置保存后，新增或频率变化的任务立即首刷并按新周期调度，取消选择的任务必须取消计时器且不得再调用上游；正在进行中的只读请求允许自然结束，但其结果不得重新激活已禁用应用。单个应用刷新失败只更新该应用状态并保留最近成功缓存，不影响另一个应用。外部适配服务需返回单应用结构，服务端校验应用 `id` 后再合并到 `/ai/usage`，禁止把外部服务返回的额外应用绕过“四选二”限制。固件收到一个应用时使用现有单应用大卡布局；收到两个应用时使用双紧凑卡布局，不能为第二个未选择应用绘制占位卡。
+查询完全由请求驱动：服务端不按周期轮询上游，`GET /ai/usage` 到来时才对 `conf/config.yml` 里 `enabled: true` 的应用并行实时查询，整体限时 7s（开发板 HTTP 超时 8s）；改配置需重启容器生效，取消启用的应用不得再调用上游。单个应用查询失败只把该应用标记为 `stale` 并回退最近一次成功结果，从未成功过则返回 `unavailable` 占位，不影响其他应用。外部适配服务需返回单应用结构，服务端校验应用 `id` 后再合并到 `/ai/usage`，id 不在四个应用目录内的一律丢弃。
+
+设备按 NVS 里保存的两个应用 id 过滤 `/ai/usage` 响应：命中零个时显示“暂无用量数据”，命中一个时使用单应用大卡布局，命中两个时使用双紧凑卡布局，不能为未选择应用绘制占位卡。
 
 AI 图标资源使用同一 provider id 映射：`chatgpt`、`devin`、`claude`、`mimo`。单应用主屏使用 24×24 alpha 1-bit 图标，AI 独立页使用 32×32 或同源高分辨率资源，双应用紧凑布局使用可辨识的 16×16 版本。品牌图标只用于识别，不用颜色传递状态；`cached`/`stale`/`unavailable` 通过文字或黑白反显表达。每个图标需记录原始来源、许可和转换脚本，不能直接提交来源不明的网络位图。
 

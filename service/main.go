@@ -3,12 +3,15 @@ package main
 import (
 	"container/list"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -29,11 +32,11 @@ const (
 )
 
 type Config struct {
+	/* 只保留监听地址与设备访问 Token。
+	 * 原来的 username/password 仅供 /admin 后台登录使用，admin 已移除。 */
 	Server struct {
-		Listen   string `yaml:"listen" json:"listen"`
-		Token    string `yaml:"token" json:"token"`
-		Username string `yaml:"username" json:"username"`
-		Password string `yaml:"password" json:"password"`
+		Listen string `yaml:"listen" json:"listen"`
+		Token  string `yaml:"token" json:"token"`
 	} `yaml:"server" json:"server"`
 	Context struct {
 		ReportToken string `yaml:"report_token" json:"report_token"`
@@ -58,15 +61,12 @@ type Config struct {
 }
 
 type App struct {
-	cfg        Config
-	settings   *SettingsStore
-	restart    func()
-	client     *http.Client
-	settingsMu sync.Mutex
+	cfg    Config
+	db     *sql.DB
+	client *http.Client
 
 	aiMu        sync.RWMutex
 	aiApps      map[string]AIApp
-	aiCancel    context.CancelFunc
 	aiAuthMu    sync.Mutex
 	mimoSession struct {
 		AccessToken  string
@@ -194,6 +194,30 @@ func isWorkdayAt(t time.Time, hy holidayYear) bool {
 	return wd != time.Saturday && wd != time.Sunday
 }
 
+/* 启动期配置校验。配置只由 conf/config.yml 提供、没有在线编辑入口，
+ * 所以坏配置必须启动即失败，避免静默上线后 AI 调度无任务或全部失败。 */
+func validateConfig(cfg Config) error {
+	if _, _, err := net.SplitHostPort(cfg.Server.Listen); err != nil {
+		return errors.New("server.listen 格式应为 :8001 或 IP:端口")
+	}
+	if strings.TrimSpace(cfg.Server.Token) == "" {
+		return errors.New("server.token（设备访问 Token）不能为空")
+	}
+	if cfg.Worktime.PingCode.TimeoutSec < 1 || cfg.Worktime.PingCode.TimeoutSec > 120 {
+		return errors.New("worktime.pingcode.timeout_sec 须为 1–120 秒")
+	}
+	if cfg.Worktime.PingCode.BaseURL != "" {
+		u, err := url.Parse(cfg.Worktime.PingCode.BaseURL)
+		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+			return errors.New("worktime.pingcode.base_url 必须是有效 HTTPS 地址且不能包含账号密码")
+		}
+		if cfg.Worktime.PingCode.Username == "" || cfg.Worktime.PingCode.Password == "" {
+			return errors.New("启用 PingCode 时账号和密码不能为空")
+		}
+	}
+	return validateAIConfig(cfg)
+}
+
 func loadConfig(path string) (Config, error) {
 	var cfg Config
 	b, err := os.ReadFile(path)
@@ -204,9 +228,24 @@ func loadConfig(path string) (Config, error) {
 		return cfg, err
 	}
 	if cfg.Server.Listen == "" {
-		cfg.Server.Listen = ":8000"
+		cfg.Server.Listen = ":8001"
+	}
+	// PingCode 凭据以 config.yml 为唯一权威源
+	if cfg.Worktime.PingCode.TimeoutSec <= 0 {
+		cfg.Worktime.PingCode.TimeoutSec = 20
+	}
+	if cfg.Context.ReportToken == "" {
+		cfg.Context.ReportToken = cfg.Server.Token
+	}
+	if cfg.Context.ReadToken == "" {
+		cfg.Context.ReadToken = cfg.Server.Token
 	}
 	normalizeAIConfig(&cfg)
+	// 上游轮换下来的 refresh token 存在数据卷（conf 是只读挂载），覆盖 conf.yml 里的旧值
+	loadPersistedRefreshTokens(&cfg)
+	if err := validateConfig(cfg); err != nil {
+		return cfg, err
+	}
 	return cfg, nil
 }
 
@@ -618,72 +657,41 @@ func main() {
 	if path == "" {
 		path = "/app/conf/config.yml"
 	}
-	seed, err := loadConfig(path)
+	/* 配置只从 conf/config.yml 读取，不再有 SQLite 里的可编辑副本，
+	 * 因此也不再需要"保存后重启重载"的循环：启动一次直到进程退出。 */
+	cfg, err := loadConfig(path)
 	if err != nil {
 		slog.Error("load config", "error", err)
 		os.Exit(1)
 	}
-	dbPath := os.Getenv("DESKWONG_SETTINGS_DB")
+	dbPath := os.Getenv("DESKWONG_DB")
 	if dbPath == "" {
-		dbPath = "/app/data/settings.sqlite"
+		dbPath = os.Getenv("DESKWONG_SETTINGS_DB") // 兼容旧环境变量名
 	}
-	store, err := openSettings(dbPath, seed)
+	if dbPath == "" {
+		dbPath = "/app/data/deskwong.sqlite"
+	}
+	db, err := openDB(dbPath)
 	if err != nil {
-		slog.Error("open settings", "error", err)
+		slog.Error("open database", "error", err)
 		os.Exit(1)
 	}
-	defer store.Close()
+	defer db.Close()
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
-	for ctx.Err() == nil {
-		cfg, err := readSettings(store)
-		if err != nil {
-			slog.Error("read settings", "error", err)
-			return
-		}
-		// 管理账号密码：SQLite 里没有时回落到 config.yml，保证旧库升级后仍能登录
-		if cfg.Server.Username == "" {
-			cfg.Server.Username = seed.Server.Username
-		}
-		if cfg.Server.Password == "" {
-			cfg.Server.Password = seed.Server.Password
-		}
-		if cfg.Server.Username == "" {
-			cfg.Server.Username = "admin"
-		}
-		if cfg.Server.Password == "" {
-			cfg.Server.Password = "admin"
-		}
-		// PingCode 凭据只以 config.yml 为权威源（不在 /admin 编辑）：
-		// 每次启动或保存重载时用 config.yml 覆盖 SQLite 中的历史 seed 值。
-		pc := seed.Worktime.PingCode
-		if pc.TimeoutSec <= 0 {
-			pc.TimeoutSec = 20
-		}
-		cfg.Worktime.PingCode = pc
-		if cfg.Context.ReportToken == "" {
-			cfg.Context.ReportToken = cfg.Server.Token
-		}
-		if cfg.Context.ReadToken == "" {
-			cfg.Context.ReadToken = cfg.Server.Token
-		}
-		setupLogger(cfg)
-		if err := runService(ctx, cfg, store); err != nil {
-			slog.Error("service", "error", err)
-			return
-		}
+	setupLogger(cfg)
+	if err := runService(ctx, cfg, db); err != nil {
+		slog.Error("service", "error", err)
+		return
 	}
 }
 
-func runService(parent context.Context, cfg Config, store *SettingsStore) error {
+func runService(parent context.Context, cfg Config, db *sql.DB) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
-	app := &App{cfg: cfg, settings: store, restart: cancel, client: &http.Client{Timeout: 12 * time.Second}}
-	app.startAIScheduler(ctx)
-	defer app.stopAIScheduler()
+	app := &App{cfg: cfg, db: db, client: &http.Client{Timeout: 12 * time.Second}}
 
 	mux := http.NewServeMux()
-	app.registerAdmin(mux)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		status := map[string]any{"status": "ok", "version": version}
 		jsonReply(w, 200, status)

@@ -16,6 +16,7 @@
     almanac_return_seconds: 15, calendar_return_seconds: 15,
     worktime_api_base: '', worktime_token: '', worktime_refresh_minutes: 30,
     aiusage_api_base: '', aiusage_token: '', aiusage_refresh_minutes: 10,
+    aiusage_apps: 'chatgpt',
     mqtt_broker: '', mqtt_port: 1883, mqtt_user: '', mqtt_pass: '',
     racebox_upload_topic: 'deskwong/racebox/data', racebox_device_name: 'RaceBox',
     racebox_device_lock: '',
@@ -46,9 +47,71 @@
       if (cfg.worktime_token === '******') cfg.worktime_token = ''
       if (cfg.aiusage_token === '******') cfg.aiusage_token = ''
       if (cfg.mqtt_pass === '******') cfg.mqtt_pass = ''
+      if (!cfg.aiusage_apps) cfg.aiusage_apps = 'chatgpt'
     } catch (e) {
       error = e.message
     }
+  }
+
+  /* AI 用量：设备端「四选二」+ 实时进度条 */
+  const AI_FALLBACK_CATALOG = [
+    { id: 'chatgpt', name: 'ChatGPT' },
+    { id: 'devin', name: 'Devin' },
+    { id: 'claude', name: 'Claude' },
+    { id: 'mimo', name: 'MiMo' }
+  ]
+  let ai = null
+  $: catalog = (ai && ai.catalog && ai.catalog.length) ? ai.catalog : AI_FALLBACK_CATALOG
+  $: selectedApps = String(cfg.aiusage_apps || '').split(',').map((s) => s.trim()).filter(Boolean)
+
+  async function refreshAI() {
+    try { ai = (await api.getAI()).data } catch (e) { ai = null }
+  }
+
+  function isAppSelected(id) { return selectedApps.indexOf(id) >= 0 }
+
+  function toggleApp(id) {
+    const list = selectedApps.slice()
+    const idx = list.indexOf(id)
+    if (idx >= 0) {
+      if (list.length <= 1) return   // 至少保留一个
+      list.splice(idx, 1)
+    } else {
+      /* 桌面最多两个：已经选满时替换最早选的那个，保证每个应用永远点得动 */
+      if (list.length >= 2) list.shift()
+      list.push(id)
+    }
+    cfg.aiusage_apps = list.join(',')
+  }
+
+  /* 实时用量卡片：四个应用都展示（有数据就画进度条，没有就显示占位），
+   * 已选中的排在前面，这样勾选/替换任何一个都能立刻看到对应应用的实时额度 */
+  $: usageCards = catalog
+    .slice()
+    .sort((a, b) => {
+      const ia = selectedApps.indexOf(a.id)
+      const ib = selectedApps.indexOf(b.id)
+      if (ia === -1 && ib === -1) return 0
+      if (ia === -1) return 1
+      if (ib === -1) return -1
+      return ia - ib
+    })
+    .map((item) => {
+      const found = ((ai && ai.apps) || []).find((a) => a.id === item.id)
+      return found || { id: item.id, name: item.name, status: 'unavailable', windows: [] }
+    })
+
+  function aiStatusText(s) {
+    return s === 'live' ? '实时' : s === 'cached' ? '缓存' : s === 'stale' ? '陈旧' : '不可用'
+  }
+
+  function aiResetText(ts) {
+    if (!ts) return '--:--'
+    const d = new Date(ts * 1000)
+    const now = new Date()
+    const p = (n) => String(n).padStart(2, '0')
+    const sameDay = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate()
+    return sameDay ? p(d.getHours()) + ':' + p(d.getMinutes()) : p(d.getMonth() + 1) + '/' + p(d.getDate())
   }
 
   async function refreshHealth() {
@@ -149,7 +212,9 @@
   applyTheme()
   load()
   refreshHealth()
+  refreshAI()
   setInterval(refreshHealth, 8000)
+  setInterval(refreshAI, 10000)
 </script>
 
 <div class="wrap">
@@ -210,6 +275,38 @@
       <label>API 地址<input bind:value={cfg.aiusage_api_base} placeholder="例如 http://20.20.10.92:8001" /></label>
       <label>密钥<input type="password" bind:value={cfg.aiusage_token} placeholder="留空不修改" /></label>
       <label>AI 用量刷新频率（分钟）<input type="number" bind:value={cfg.aiusage_refresh_minutes} min="1" max="1440" /></label>
+
+      <div class="app-picker">
+        {#each catalog as item}
+          {@const on = isAppSelected(item.id)}
+          <button type="button" class="app-chip" class:on aria-pressed={on} aria-label={'展示 ' + item.name} on:click={() => toggleApp(item.id)}>
+            <span class="chip-check" aria-hidden="true">{on ? '✓' : ''}</span>{item.name}
+          </button>
+        {/each}
+      </div>
+
+      <div class="usage-list">
+        {#each usageCards as app}
+          <div class="usage-card">
+            <div class="usage-head">
+              <strong>{app.name}</strong>
+              <span class="badge {app.status === 'live' ? 'ok' : 'warn'}">{aiStatusText(app.status)}</span>
+            </div>
+            {#if app.windows && app.windows.length}
+              {#each app.windows as w}
+                <div class="usage-row">
+                  <span class="usage-label">{w.label || '--'}</span>
+                  <div class="usage-bar"><div class="usage-fill" style="width: {w.remaining_percent == null ? 0 : w.remaining_percent}%"></div></div>
+                  <span class="usage-value">{w.remaining_percent == null ? '--%' : Math.round(w.remaining_percent) + '%'}</span>
+                  <span class="usage-reset">{aiResetText(w.resets_at)}</span>
+                </div>
+              {/each}
+            {:else}
+              <p class="usage-empty">暂无用量数据</p>
+            {/if}
+          </div>
+        {/each}
+      </div>
     </section>
 
     <section>
@@ -217,7 +314,6 @@
       <div class="setting-row">
         <div>
           <strong>启用 RaceBox 设备同步</strong>
-          <small>关闭后隐藏桌面 RaceBox 状态并停用 KEY 同步；配置和历史数据仍会保留。</small>
         </div>
         <label class="switch" aria-label="启用 RaceBox 设备同步">
           <input type="checkbox" bind:checked={cfg.racebox_enabled} />
@@ -408,6 +504,22 @@
   select { display: block; width: 100%; margin-top: 7px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--input); color: var(--text); font: inherit; font-size: 14px; outline: none; transition: border-color .16s, box-shadow .16s; }
   select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus); }
   select:disabled { cursor: not-allowed; opacity: .55; }
+  .app-picker { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 4px 0 18px; }
+  .app-chip { display: flex; align-items: center; justify-content: center; gap: 7px; margin: 0; padding: 11px 8px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-soft); color: var(--muted); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
+  .app-chip:hover { border-color: var(--accent); }
+  .app-chip.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+  .chip-check { display: inline-grid; place-items: center; width: 15px; height: 15px; font-size: 11px; line-height: 1; }
+  .usage-list { display: grid; gap: 12px; }
+  .usage-card { padding: 14px 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-soft); }
+  .usage-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+  .usage-head strong { color: var(--text); font-size: 14px; }
+  .usage-row { display: grid; grid-template-columns: 56px 1fr 50px 52px; align-items: center; gap: 10px; margin-top: 10px; font-size: 12px; color: var(--muted); }
+  .usage-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .usage-bar { height: 8px; border-radius: 999px; background: var(--border-subtle); overflow: hidden; }
+  .usage-fill { height: 100%; border-radius: 999px; background: var(--accent); transition: width .3s; }
+  .usage-value { text-align: right; color: var(--text); font-weight: 600; }
+  .usage-reset { text-align: right; }
+  .usage-empty { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
   .reminder-master, .voice-master { margin-bottom: 14px; }
   .reminder-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; transition: opacity .2s; }
   .reminder-grid.disabled { opacity: .58; }
@@ -434,5 +546,7 @@
     .reminder-grid { grid-template-columns: 1fr; }
     .reminder-hold { grid-template-columns: 1fr; }
     .time-input input { width: 72px; }
+    .app-picker { grid-template-columns: repeat(2, 1fr); }
+    .usage-row { grid-template-columns: 48px 1fr 46px 48px; gap: 6px; }
   }
 </style>

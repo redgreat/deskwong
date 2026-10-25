@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -25,16 +26,15 @@ const (
 )
 
 type AIProviderConfig struct {
-	ID             string `yaml:"id" json:"id"`
-	Enabled        bool   `yaml:"enabled" json:"enabled"`
-	Order          int    `yaml:"order" json:"order"`
-	RefreshMinutes int    `yaml:"refresh_minutes" json:"refresh_minutes"`
-	AuthMode       string `yaml:"auth_mode" json:"auth_mode"`
-	Username       string `yaml:"username" json:"username"`
-	Password       string `yaml:"password" json:"password"`
-	APIBase        string `yaml:"api_base" json:"api_base"`
-	APIToken       string `yaml:"api_token" json:"api_token"`
-	RefreshToken   string `yaml:"refresh_token" json:"refresh_token"`
+	ID           string `yaml:"id" json:"id"`
+	Enabled      bool   `yaml:"enabled" json:"enabled"`
+	Order        int    `yaml:"order" json:"order"`
+	AuthMode     string `yaml:"auth_mode" json:"auth_mode"`
+	Username     string `yaml:"username" json:"username"`
+	Password     string `yaml:"password" json:"password"`
+	APIBase      string `yaml:"api_base" json:"api_base"`
+	APIToken     string `yaml:"api_token" json:"api_token"`
+	RefreshToken string `yaml:"refresh_token" json:"refresh_token"`
 }
 
 type AIWindow struct {
@@ -55,7 +55,7 @@ type AIApp struct {
 }
 
 var aiCatalog = map[string]string{
-	"chatgpt": "GPT",
+	"chatgpt": "ChatGPT",
 	"devin":   "Devin",
 	"claude":  "Claude",
 	"mimo":    "MiMo",
@@ -69,10 +69,10 @@ var (
 
 func defaultAIProviders() []AIProviderConfig {
 	return []AIProviderConfig{
-		{ID: "chatgpt", Enabled: true, Order: 0, RefreshMinutes: 10, AuthMode: "client_login"},
-		{ID: "devin", Order: 1, RefreshMinutes: 10, AuthMode: "client_login"},
-		{ID: "claude", Order: 2, RefreshMinutes: 10, AuthMode: "external_api"},
-		{ID: "mimo", Order: 3, RefreshMinutes: 10, AuthMode: "oauth_refresh"},
+		{ID: "chatgpt", Enabled: true, Order: 0, AuthMode: "client_login"},
+		{ID: "devin", Order: 1, AuthMode: "client_login"},
+		{ID: "claude", Order: 2, AuthMode: "external_api"},
+		{ID: "mimo", Order: 3, AuthMode: "oauth_refresh"},
 	}
 }
 
@@ -85,9 +85,6 @@ func normalizeAIConfig(cfg *Config) {
 	for i := range defaults {
 		if p, ok := byID[defaults[i].ID]; ok {
 			defaults[i] = p
-		}
-		if defaults[i].RefreshMinutes == 0 {
-			defaults[i].RefreshMinutes = 10
 		}
 	}
 	cfg.AIUsage.Providers = defaults
@@ -102,9 +99,6 @@ func validateAIConfig(cfg Config) error {
 			return fmt.Errorf("AI 应用 id 无效或重复: %s", p.ID)
 		}
 		seen[p.ID] = true
-		if p.RefreshMinutes < 1 || p.RefreshMinutes > 1440 {
-			return fmt.Errorf("%s 刷新频率必须为 1～1440 分钟", aiCatalog[p.ID])
-		}
 		if !p.Enabled {
 			continue
 		}
@@ -141,8 +135,10 @@ func validateAIConfig(cfg Config) error {
 	if len(seen) != len(aiCatalog) {
 		return errors.New("AI 应用配置必须包含 ChatGPT、Devin、Claude Code 和 MiMo Desktop")
 	}
-	if enabled < 1 || enabled > 2 {
-		return errors.New("必须启用 1～2 个 AI 应用")
+	/* 不再强制"四选二"：服务端允许启用全部应用，由开发板后台自行挑选要显示的
+	 * 两个（设备侧配置），这里只限制上限，避免配错 id 重复计入。 */
+	if enabled > len(aiCatalog) {
+		return fmt.Errorf("最多启用 %d 个 AI 应用", len(aiCatalog))
 	}
 	return nil
 }
@@ -514,6 +510,55 @@ func (a *App) refreshMiMoOAuth(ctx context.Context, refreshToken string) (mimoOA
 	return refreshed, nil
 }
 
+/* ---- 上游轮换 Refresh Token 的落盘 ----
+ * conf/ 是只读挂载，轮换结果只能写数据卷。过去这件事由 SQLite 里的可编辑配置
+ * （配合 /admin 后台）承担；配置改为纯 conf.yml 后，这里改成一个独立的 JSON
+ * 文件（权限 0600），服务启动时用它覆盖 conf.yml 里可能已经过期的值。 */
+
+func refreshTokenPath() string {
+	if p := os.Getenv("DESKWONG_REFRESH_TOKEN_FILE"); p != "" {
+		return p
+	}
+	return "/app/data/ai_refresh_token.json"
+}
+
+/* 启动时用数据卷里保存的轮换结果覆盖 conf.yml 的旧 refresh token */
+func loadPersistedRefreshTokens(cfg *Config) {
+	b, err := os.ReadFile(refreshTokenPath())
+	if err != nil {
+		return
+	}
+	var tokens map[string]string
+	if err := json.Unmarshal(b, &tokens); err != nil {
+		return
+	}
+	for i := range cfg.AIUsage.Providers {
+		if t := tokens[cfg.AIUsage.Providers[i].ID]; t != "" {
+			cfg.AIUsage.Providers[i].RefreshToken = t
+		}
+	}
+}
+
+func (a *App) persistAIRefreshToken(providerID, token string) error {
+	/* 唯一调用方 fetchMiMoOAuth 已持有 a.aiAuthMu，这里不能再加同一把锁
+	 * （会死锁）。写入用「写临时文件 + Rename」原子替换，保证并发安全。 */
+	path := refreshTokenPath()
+	tokens := map[string]string{}
+	if b, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(b, &tokens)
+	}
+	tokens[providerID] = token
+	body, err := json.Marshal(tokens)
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, body, 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
 func (a *App) fetchMiMoOAuth(ctx context.Context, configuredRefreshToken string) (AIApp, error) {
 	a.aiAuthMu.Lock()
 	defer a.aiAuthMu.Unlock()
@@ -597,7 +642,9 @@ func (a *App) fetchMiMoUsage(ctx context.Context, token string) (AIApp, error) {
 	return AIApp{ID: "mimo", Name: aiCatalog["mimo"], Status: aiStatusLive, ObservedAt: time.Now().Unix(), Windows: []AIWindow{{ID: "mimo_current", Label: "额度", RemainingPercent: clampPercent(100 - payload.Data.Percent), ResetsAt: unixOrDate(payload.Data.ResetDate)}}}, nil
 }
 
-func (a *App) refreshAIProvider(ctx context.Context, p AIProviderConfig) {
+/* 拉取单个应用的实时用量；成功时更新"最近一次成功"缓存，失败时回退到缓存并标记
+ * stale，从未成功过则返回 unavailable 占位。返回值即对外展示的应用状态。 */
+func (a *App) refreshAIProvider(ctx context.Context, p AIProviderConfig) AIApp {
 	app, err := a.fetchAIProvider(ctx, p)
 	a.aiMu.Lock()
 	defer a.aiMu.Unlock()
@@ -606,57 +653,35 @@ func (a *App) refreshAIProvider(ctx context.Context, p AIProviderConfig) {
 	}
 	if err == nil {
 		a.aiApps[p.ID] = app
-		return
+		return app
 	}
-	old, ok := a.aiApps[p.ID]
-	if ok && len(old.Windows) > 0 {
+	if old, ok := a.aiApps[p.ID]; ok && len(old.Windows) > 0 {
 		old.Status = aiStatusStale
 		old.Error = err.Error()
 		a.aiApps[p.ID] = old
-	} else {
-		a.aiApps[p.ID] = AIApp{ID: p.ID, Name: aiCatalog[p.ID], Status: aiStatusUnavailable, Windows: []AIWindow{}, Error: err.Error()}
+		return old
 	}
-	slog.Warn("AI usage refresh failed", "provider", p.ID, "error", err)
+	placeholder := AIApp{ID: p.ID, Name: aiCatalog[p.ID], Status: aiStatusUnavailable, Windows: []AIWindow{}, Error: err.Error()}
+	a.aiApps[p.ID] = placeholder
+	slog.Warn("AI usage fetch failed", "provider", p.ID, "error", err)
+	return placeholder
 }
 
-func (a *App) startAIScheduler(parent context.Context) {
-	ctx, cancel := context.WithCancel(parent)
-	a.aiCancel = cancel
-	for _, provider := range enabledAIProviders(a.cfg) {
-		p := provider
-		go func() {
-			a.refreshAIProvider(ctx, p)
-			ticker := time.NewTicker(time.Duration(p.RefreshMinutes) * time.Minute)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-					a.refreshAIProvider(ctx, p)
-				}
-			}
-		}()
-	}
-}
-
-func (a *App) stopAIScheduler() {
-	if a.aiCancel != nil {
-		a.aiCancel()
-	}
-}
-
-func (a *App) aiUsage(w http.ResponseWriter, _ *http.Request) {
+/* 设备或网页请求时才实时查询上游，服务端不按周期轮询、不长期缓存。
+ * 各应用并行请求，整体限时 7s（开发板 HTTP 超时 8s），保证设备一次请求拿全。 */
+func (a *App) aiUsage(w http.ResponseWriter, r *http.Request) {
 	providers := enabledAIProviders(a.cfg)
-	a.aiMu.RLock()
-	apps := make([]AIApp, 0, len(providers))
-	for _, p := range providers {
-		if app, ok := a.aiApps[p.ID]; ok {
-			apps = append(apps, app)
-		} else {
-			apps = append(apps, AIApp{ID: p.ID, Name: aiCatalog[p.ID], Status: aiStatusUnavailable, Windows: []AIWindow{}})
-		}
+	ctx, cancel := context.WithTimeout(r.Context(), 7*time.Second)
+	defer cancel()
+	apps := make([]AIApp, len(providers))
+	var wg sync.WaitGroup
+	for i := range providers {
+		wg.Add(1)
+		go func(i int, p AIProviderConfig) {
+			defer wg.Done()
+			apps[i] = a.refreshAIProvider(ctx, p)
+		}(i, providers[i])
 	}
-	a.aiMu.RUnlock()
+	wg.Wait()
 	jsonReply(w, http.StatusOK, map[string]any{"code": 0, "message": "ok", "data": map[string]any{"apps": apps}})
 }

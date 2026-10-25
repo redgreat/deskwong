@@ -78,7 +78,7 @@ int aiusage_service_fetch(ai_provider_t *out, int max, int *count) {
             cpy(out[n].id, sizeof(out[n].id), cJSON_GetObjectItem(it, "id"));
             cpy(out[n].name, sizeof(out[n].name), cJSON_GetObjectItem(it, "name"));
             strncpy(out[n].app_id, "chatgpt", sizeof(out[n].app_id) - 1);
-            strncpy(out[n].app_name, "GPT", sizeof(out[n].app_name) - 1);
+            strncpy(out[n].app_name, "ChatGPT", sizeof(out[n].app_name) - 1);
             cpy(out[n].label, sizeof(out[n].label), cJSON_GetObjectItem(it, "label"));
             cpy(out[n].display, sizeof(out[n].display), cJSON_GetObjectItem(it, "display"));
             cpy(out[n].status, sizeof(out[n].status), cJSON_GetObjectItem(it, "status"));

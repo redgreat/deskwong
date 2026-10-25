@@ -14,5 +14,5 @@ COPY --chown=nonroot:nonroot conf/config.yml.sample /app/conf/config.yml
 COPY --chown=nonroot:nonroot service/data/ /app/data/
 EXPOSE 8001
 ENV DESKWONG_CONFIG=/app/conf/config.yml
-ENV DESKWONG_SETTINGS_DB=/app/data/settings.sqlite
+ENV DESKWONG_DB=/app/data/deskwong.sqlite
 ENTRYPOINT ["/app/deskwong-service"]

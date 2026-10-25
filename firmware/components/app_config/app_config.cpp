@@ -8,7 +8,7 @@ static const char *TAG = "cfg";
 #define NVS_NS "deskwong"
 
 /* 配置结构版本号：新增出厂默认值时 +1，老设备升级后自动补齐一次 */
-#define CFG_VERSION 5
+#define CFG_VERSION 6
 
 /* 一次性迁移：老设备 NVS 里已有空值会盖掉出厂默认值，这里把关键字段补回来 */
 static void migrate(app_config_t *cfg, uint8_t stored_ver) {
@@ -24,6 +24,8 @@ static void migrate(app_config_t *cfg, uint8_t stored_ver) {
         strcpy(cfg->weather_location, "101120201");
     if (cfg->almanac_api_url[0] == 0)
         strcpy(cfg->almanac_api_url, "https://ai.wongcw.cn/almanac");
+    if (cfg->aiusage_apps[0] == 0)
+        strcpy(cfg->aiusage_apps, "chatgpt");
     ESP_LOGW(TAG, "config migrated v%d -> v%d", stored_ver, CFG_VERSION);
 }
 
@@ -53,6 +55,7 @@ void app_config_defaults(app_config_t *cfg) {
     strcpy(cfg->aiusage_api_base, "");
     strcpy(cfg->aiusage_token, "");
     cfg->aiusage_refresh_minutes = 10;
+    strcpy(cfg->aiusage_apps, "chatgpt");   // 默认只展示 ChatGPT/Codex
     strcpy(cfg->mqtt_broker, "");
     cfg->mqtt_port = 1883;
     strcpy(cfg->mqtt_user, "");
@@ -139,6 +142,9 @@ esp_err_t app_config_load(app_config_t *cfg) {
     get_str(h, "ai_token", cfg->aiusage_token, sizeof(cfg->aiusage_token));
     nvs_get_u16(h, "ai_freq", &cfg->aiusage_refresh_minutes);
     if (cfg->aiusage_refresh_minutes < 1) cfg->aiusage_refresh_minutes = 1;
+    get_str(h, "ai_apps", cfg->aiusage_apps, sizeof(cfg->aiusage_apps));
+    /* 老固件没写过这个键，或网页保存了空值：退回"只展示 ChatGPT/Codex" */
+    if (cfg->aiusage_apps[0] == 0) strcpy(cfg->aiusage_apps, "chatgpt");
     get_str(h, "mqtt_broker", cfg->mqtt_broker, sizeof(cfg->mqtt_broker));
     get_str(h, "mqtt_user", cfg->mqtt_user, sizeof(cfg->mqtt_user));
     get_str(h, "mqtt_pass", cfg->mqtt_pass, sizeof(cfg->mqtt_pass));
@@ -211,6 +217,7 @@ esp_err_t app_config_load(app_config_t *cfg) {
             nvs_set_str(w, "weather_loc", cfg->weather_location);
             nvs_set_str(w, "weather_url", cfg->weather_api_url);
             nvs_set_str(w, "weather_key", cfg->weather_key);
+            nvs_set_str(w, "ai_apps", cfg->aiusage_apps);
             nvs_commit(w);
             nvs_close(w);
         }
@@ -242,6 +249,7 @@ esp_err_t app_config_save(const app_config_t *cfg) {
     if ((err = nvs_set_str(h, "ai_base", cfg->aiusage_api_base)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_str(h, "ai_token", cfg->aiusage_token)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_u16(h, "ai_freq", cfg->aiusage_refresh_minutes)) != ESP_OK) { nvs_close(h); return err; }
+    if ((err = nvs_set_str(h, "ai_apps", cfg->aiusage_apps)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_str(h, "mqtt_broker", cfg->mqtt_broker)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_str(h, "mqtt_user", cfg->mqtt_user)) != ESP_OK) { nvs_close(h); return err; }
     if ((err = nvs_set_str(h, "mqtt_pass", cfg->mqtt_pass)) != ESP_OK) { nvs_close(h); return err; }
