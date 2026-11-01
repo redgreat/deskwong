@@ -363,7 +363,16 @@ func (a *App) fetchDevinWeb(ctx context.Context, organization, token string) (AI
 		req.Header.Set("x-cog-org-id", organization)
 	}
 	req.Header.Set("Accept", "application/json")
-	return a.fetchDevinResponse(req)
+	app, err := a.fetchDevinResponse(req)
+	if err != nil {
+		/* apk_ 是 Devin 设置页生成的服务 API Key，只对 api.devin.ai/v3 有效；
+		 * 日/周额度接口只认浏览器会话 token，这里把原因讲清楚，省得反复查日志 */
+		if strings.HasPrefix(strings.TrimPrefix(strings.TrimSpace(token), "Bearer "), "apk_") {
+			return AIApp{}, fmt.Errorf("%w（apk_ 服务 Key 不能查询日/周额度，这个接口只接受浏览器会话 token，见 service/README.md 的《Devin 凭据获取》）", err)
+		}
+		return AIApp{}, err
+	}
+	return app, nil
 }
 
 /* apk_ Key 的载荷是 base64，前缀是可打印的组织 ID，后面跟二进制签名 */

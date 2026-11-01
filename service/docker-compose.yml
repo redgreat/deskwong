@@ -1,3 +1,6 @@
+# 国内机：只跑工时/黄历/小智上下文等简单服务（core 模式，不注册 /ai/usage）。
+# AI 用量拆到独立镜像 deskwong-ai，部署在国外 VPS（见 docker-compose.ai.yml），
+# 开发板后台的「AI 用量 API 地址/密钥」直接指向 VPS 上的服务。
 services:
   deskwong-service:
     image: ghcr.io/redgreat/deskwong:latest
@@ -8,17 +11,12 @@ services:
     environment:
       TZ: Asia/Shanghai
       DESKWONG_LOG_LEVEL: "info"
-      DESKWONG_CODEX_AUTH_FILE: "/home/nonroot/.codex/auth.json"
-      HTTPS_PROXY: "http://host.docker.internal:7890"
-      HTTP_PROXY: "http://host.docker.internal:7890"
+      DESKWONG_MODE: "core"
     ports:
       - "8001:8001"
     volumes:
       - ./conf:/app/conf:ro
       - deskwong-settings:/app/data
-      - ${DESKWONG_CODEX_AUTH_DIR:-/home/wangcw/.codex}:/home/nonroot/.codex:ro
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     logging:
       driver: json-file
       options:

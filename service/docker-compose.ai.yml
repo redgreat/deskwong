@@ -1,0 +1,32 @@
+# 国外 VPS：AI 用量专用镜像（ai 模式，只暴露 /health 与 /ai/usage）。
+# 部署：把本文件重命名为 docker-compose.yml（或 docker compose -f docker-compose.ai.yml），
+# 同目录放 conf/config.yml（参考 conf/config.ai.yml.sample），设置 DESKWONG_CODEX_AUTH_DIR
+# 指向宿主机 ~/.codex，然后 docker compose up -d；更新用 script/redeploy.sh。
+# VPS 在国外可直接访问 chatgpt.com / app.devin.ai，不需要代理环境变量。
+services:
+  deskwong-ai:
+    image: ghcr.io/redgreat/deskwong-ai:latest
+    container_name: deskwong-ai
+    hostname: deskwong-ai
+    restart: unless-stopped
+    pull_policy: always
+    environment:
+      TZ: Asia/Shanghai
+      DESKWONG_LOG_LEVEL: "info"
+      DESKWONG_MODE: "ai"
+      DESKWONG_CODEX_AUTH_FILE: "/home/nonroot/.codex/auth.json"
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./conf:/app/conf:ro
+      # MiMo 等 oauth_refresh 轮换后的 refresh token 落盘到 /app/data/ai_refresh_token.json
+      - deskwong-ai-data:/app/data
+      - ${DESKWONG_CODEX_AUTH_DIR:-~/.codex}:/home/nonroot/.codex:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  deskwong-ai-data:

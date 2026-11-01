@@ -1,5 +1,8 @@
+# 仅当 AI 用量容器需要读取桌面客户端登录态时才用本 override：
+# 复制到国外 VPS 上与 docker-compose.ai.yml 同目录，改名 docker-compose.override.yml
+# 并填写三个宿主目录环境变量后再启动。服务名必须对应 docker-compose.ai.yml 的 deskwong-ai。
 services:
-  deskwong-service:
+  deskwong-ai:
     environment:
       DESKWONG_DEVIN_CREDENTIALS_FILE: /home/nonroot/.local/share/devin/credentials.toml
       DESKWONG_DEVIN_STATE_DB: /home/nonroot/.config/Devin/User/globalStorage/state.vscdb

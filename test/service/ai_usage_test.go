@@ -85,6 +85,25 @@ func TestDevinClientLoginAndManualQuota(t *testing.T) {
 	}
 }
 
+/* apk_ 服务 Key 查不到日/周额度时，错误信息必须直接说清楚要用浏览器会话 token */
+func TestDevinServiceKeyGetsActionableError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"detail":"Unauthenticated"}`))
+	}))
+	defer server.Close()
+	old := devinWebBase
+	devinWebBase = server.URL
+	defer func() { devinWebBase = old }()
+
+	app := &App{client: server.Client()}
+	_, err := app.fetchDevinWeb(context.Background(), "org_test", "apk_b3JnLTM2MWI4")
+	if err == nil || !strings.Contains(err.Error(), "Unauthenticated") ||
+		!strings.Contains(err.Error(), "浏览器会话") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
 /* ChatGPT 的 5 小时窗口必须写「5小时」，每周窗口写「每周」 */
 func TestChatGPTWindowLabelsAreReadable(t *testing.T) {
 	if got := labelForWindow("chatgpt_5h", 300); got != "5小时" {

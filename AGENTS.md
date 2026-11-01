@@ -33,6 +33,9 @@
 - 服务端部署：用 `script/redeploy.sh`（保留 `deskwong-settings` 卷数据）。目标机未部署过时，
   部署到上次指定的目录（脚本会优先用 `DEPLOY_DIR`，其次找脚本同级 docker-compose.yml，
   最后回落仓库 `service/`），不要另起新目录重复部署。
+- 服务已拆两个镜像（同一 Dockerfile，按 `DESKWONG_MODE` 区分）：国内 `deskwong`（core 模式，
+  工时/黄历/小智上下文）与国外 VPS `deskwong-ai`（ai 模式，仅 /ai/usage，compose 为
+  `service/docker-compose.ai.yml`，配置样例 `conf/config.ai.yml.sample`）。
 
 ## 测试
 

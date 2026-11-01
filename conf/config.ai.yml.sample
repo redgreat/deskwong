@@ -1,0 +1,55 @@
+# AI 用量镜像（deskwong-ai，DESKWONG_MODE=ai）专用配置样例。
+# 部署在国外 VPS 时只保留 server / log / ai_usage 三段即可；
+# worktime、context 段在 ai 模式下不校验、不生效，可以整段省略。
+server:
+  listen: ":8001"
+  # 开发板调用 /ai/usage 的固定 Bearer Token（开发板后台「AI 用量 → 密钥」填同一个值；
+  # 与国内 core 服务的 token 相互独立，建议用不同的随机值）
+  token: "change-me"
+
+log:
+  level: "info"   # debug | info | warn | error；可被环境变量 DESKWONG_LOG_LEVEL 覆盖
+  format: "text"  # text | json；可被环境变量 DESKWONG_LOG_FORMAT 覆盖
+
+# AI 用量：这里只决定哪些应用可用（enabled），服务端不轮询不缓存，
+# 开发板（或网页后台）每次 GET /ai/usage 时才实时查询上游；
+# 开发板网页后台再从返回的应用里挑两个显示（四选二）。不想查询的直接 enabled: false。
+ai_usage:
+  providers:
+    # ChatGPT/Codex：读取 DESKWONG_CODEX_AUTH_FILE（默认 ~/.codex/auth.json），
+    # compose 里只读挂载宿主机 .codex 目录，因为 Codex 刷新登录会原子替换文件
+    - id: "chatgpt"
+      enabled: true
+      order: 0
+      auth_mode: "client_login"
+
+    # Devin：client_login 读取客户端登录态；manual_token 用「组织 ID + 浏览器会话
+    # Bearer Token」（不是 apk_ 服务 Key，获取方法见 service/README.md《Devin 凭据获取》）
+    - id: "devin"
+      enabled: false
+      order: 1
+      auth_mode: "manual_token"
+      username: ""      # 组织 ID（org-…）
+      api_token: ""     # 浏览器会话 Bearer Token
+
+    # Claude Code：外部 API 模式，需要 api_base（也可改成 password 模式填账号密码）
+    - id: "claude"
+      enabled: false
+      order: 2
+      auth_mode: "external_api"
+      api_base: ""
+
+    # MiMo Desktop：oauth_refresh 只在这里填初始 refresh token，
+    # 上游轮换后的新 token 会写入数据卷 /app/data/ai_refresh_token.json（conf 是只读挂载）
+    - id: "mimo"
+      enabled: false
+      order: 3
+      auth_mode: "oauth_refresh"
+      refresh_token: ""
+
+# auth_mode 取值说明：
+#   client_login  服务容器本机客户端登录态（chatgpt / devin / mimo）
+#   manual_token  Devin 组织 ID + Bearer Token（username + api_token）
+#   oauth_refresh MiMo OAuth Refresh Token（refresh_token）
+#   password      账号 + 密码 + API 地址（username + password + api_base）
+#   external_api  外部 API 地址（api_base）

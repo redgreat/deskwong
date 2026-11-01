@@ -59,6 +59,7 @@ jobs:
           namespace="${QUAY_USERNAME%%+*}"
           test -n "$namespace"
           echo "image=quay.io/$namespace/deskwong" >> "$GITHUB_OUTPUT"
+          echo "image_ai=quay.io/$namespace/deskwong-ai" >> "$GITHUB_OUTPUT"
 
       - name: Docker metadata
         id: meta
@@ -67,6 +68,19 @@ jobs:
           images: |
             ${{ env.GHCR_IMAGE }}
             ${{ steps.quay.outputs.image }}
+          tags: |
+            type=ref,event=tag
+            type=raw,value=latest
+
+      # AI 用量独立镜像：同一 Dockerfile、同一二进制，MODE=ai 固化运行模式，
+      # 部署到国外 VPS（国内镜像保留全部接口，compose 里以 DESKWONG_MODE=core 运行）
+      - name: Docker metadata (AI usage image)
+        id: meta_ai
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.GHCR_IMAGE }}-ai
+            ${{ steps.quay.outputs.image_ai }}
           tags: |
             type=ref,event=tag
             type=raw,value=latest
@@ -90,6 +104,24 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             VERSION=${{ steps.release.outputs.version }}
+            COMMIT=${{ github.sha }}
+            BUILD_TIME=${{ steps.release.outputs.build_time }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push AI usage image to GHCR and Quay
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: service/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta_ai.outputs.tags }}
+          labels: ${{ steps.meta_ai.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.release.outputs.version }}
+            MODE=ai
+            CONFIG_SAMPLE=config.ai.yml.sample
             COMMIT=${{ github.sha }}
             BUILD_TIME=${{ steps.release.outputs.build_time }}
           cache-from: type=gha

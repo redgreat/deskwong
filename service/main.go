@@ -31,6 +31,28 @@ const (
 	codexUsageURL = "https://chatgpt.com/backend-api/wham/usage"
 )
 
+/* 部署形态：DESKWONG_MODE 决定本进程暴露哪些接口、校验哪些配置段。
+ *   full（默认） 全部接口；保持单镜像部署的兼容行为
+ *   core         国内机：工时/黄历/小智上下文，不含 /ai/usage，不校验 ai_usage 段
+ *   ai           国外 VPS：只有 /health 与 /ai/usage，不依赖 SQLite 和 worktime 段
+ * 国内/国外镜像用同一个二进制，镜像或 docker-compose 用环境变量固化模式。 */
+const (
+	modeFull = "full"
+	modeCore = "core"
+	modeAI   = "ai"
+)
+
+func serviceMode() (string, error) {
+	switch m := strings.ToLower(strings.TrimSpace(os.Getenv("DESKWONG_MODE"))); m {
+	case "", modeFull:
+		return modeFull, nil
+	case modeCore, modeAI:
+		return m, nil
+	default:
+		return "", fmt.Errorf("DESKWONG_MODE 无效: %q（可选 %s / %s / %s）", m, modeFull, modeCore, modeAI)
+	}
+}
+
 type Config struct {
 	/* 只保留监听地址与设备访问 Token。
 	 * 原来的 username/password 仅供 /admin 后台登录使用，admin 已移除。 */
@@ -195,30 +217,40 @@ func isWorkdayAt(t time.Time, hy holidayYear) bool {
 }
 
 /* 启动期配置校验。配置只由 conf/config.yml 提供、没有在线编辑入口，
- * 所以坏配置必须启动即失败，避免静默上线后 AI 调度无任务或全部失败。 */
+ * 所以坏配置必须启动即失败，避免静默上线后 AI 调度无任务或全部失败。
+ * 校验范围随部署模式裁剪：ai 模式不查 worktime 段，core 模式不查 ai_usage 段。 */
 func validateConfig(cfg Config) error {
+	return validateConfigMode(cfg, modeFull)
+}
+
+func validateConfigMode(cfg Config, mode string) error {
 	if _, _, err := net.SplitHostPort(cfg.Server.Listen); err != nil {
 		return errors.New("server.listen 格式应为 :8001 或 IP:端口")
 	}
 	if strings.TrimSpace(cfg.Server.Token) == "" {
 		return errors.New("server.token（设备访问 Token）不能为空")
 	}
-	if cfg.Worktime.PingCode.TimeoutSec < 1 || cfg.Worktime.PingCode.TimeoutSec > 120 {
-		return errors.New("worktime.pingcode.timeout_sec 须为 1–120 秒")
+	if mode != modeAI {
+		if cfg.Worktime.PingCode.TimeoutSec < 1 || cfg.Worktime.PingCode.TimeoutSec > 120 {
+			return errors.New("worktime.pingcode.timeout_sec 须为 1–120 秒")
+		}
+		if cfg.Worktime.PingCode.BaseURL != "" {
+			u, err := url.Parse(cfg.Worktime.PingCode.BaseURL)
+			if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+				return errors.New("worktime.pingcode.base_url 必须是有效 HTTPS 地址且不能包含账号密码")
+			}
+			if cfg.Worktime.PingCode.Username == "" || cfg.Worktime.PingCode.Password == "" {
+				return errors.New("启用 PingCode 时账号和密码不能为空")
+			}
+		}
 	}
-	if cfg.Worktime.PingCode.BaseURL != "" {
-		u, err := url.Parse(cfg.Worktime.PingCode.BaseURL)
-		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
-			return errors.New("worktime.pingcode.base_url 必须是有效 HTTPS 地址且不能包含账号密码")
-		}
-		if cfg.Worktime.PingCode.Username == "" || cfg.Worktime.PingCode.Password == "" {
-			return errors.New("启用 PingCode 时账号和密码不能为空")
-		}
+	if mode == modeCore {
+		return nil
 	}
 	return validateAIConfig(cfg)
 }
 
-func loadConfig(path string) (Config, error) {
+func loadConfig(path string, mode string) (Config, error) {
 	var cfg Config
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -240,10 +272,12 @@ func loadConfig(path string) (Config, error) {
 	if cfg.Context.ReadToken == "" {
 		cfg.Context.ReadToken = cfg.Server.Token
 	}
-	normalizeAIConfig(&cfg)
-	// 上游轮换下来的 refresh token 存在数据卷（conf 是只读挂载），覆盖 conf.yml 里的旧值
-	loadPersistedRefreshTokens(&cfg)
-	if err := validateConfig(cfg); err != nil {
+	if mode != modeCore {
+		normalizeAIConfig(&cfg)
+		// 上游轮换下来的 refresh token 存在数据卷（conf 是只读挂载），覆盖 conf.yml 里的旧值
+		loadPersistedRefreshTokens(&cfg)
+	}
+	if err := validateConfigMode(cfg, mode); err != nil {
 		return cfg, err
 	}
 	return cfg, nil
@@ -653,64 +687,81 @@ func almanacDate(s string) (time.Time, error) {
 }
 
 func main() {
+	mode, err := serviceMode()
+	if err != nil {
+		slog.Error("service mode", "error", err)
+		os.Exit(1)
+	}
 	path := os.Getenv("DESKWONG_CONFIG")
 	if path == "" {
 		path = "/app/conf/config.yml"
 	}
 	/* 配置只从 conf/config.yml 读取，不再有 SQLite 里的可编辑副本，
 	 * 因此也不再需要"保存后重启重载"的循环：启动一次直到进程退出。 */
-	cfg, err := loadConfig(path)
+	cfg, err := loadConfig(path, mode)
 	if err != nil {
 		slog.Error("load config", "error", err)
 		os.Exit(1)
 	}
-	dbPath := os.Getenv("DESKWONG_DB")
-	if dbPath == "" {
-		dbPath = os.Getenv("DESKWONG_SETTINGS_DB") // 兼容旧环境变量名
+	/* SQLite 只承载小智上下文快照；ai 模式不注册上下文接口，不必开库，
+	 * 国外 VPS 也就不用挂数据卷以外的目录（refresh token 落盘走 JSON 文件）。 */
+	var db *sql.DB
+	if mode != modeAI {
+		dbPath := os.Getenv("DESKWONG_DB")
+		if dbPath == "" {
+			dbPath = os.Getenv("DESKWONG_SETTINGS_DB") // 兼容旧环境变量名
+		}
+		if dbPath == "" {
+			dbPath = "/app/data/deskwong.sqlite"
+		}
+		db, err = openDB(dbPath)
+		if err != nil {
+			slog.Error("open database", "error", err)
+			os.Exit(1)
+		}
+		defer db.Close()
 	}
-	if dbPath == "" {
-		dbPath = "/app/data/deskwong.sqlite"
-	}
-	db, err := openDB(dbPath)
-	if err != nil {
-		slog.Error("open database", "error", err)
-		os.Exit(1)
-	}
-	defer db.Close()
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 	setupLogger(cfg)
-	if err := runService(ctx, cfg, db); err != nil {
+	if err := runService(ctx, cfg, db, mode); err != nil {
 		slog.Error("service", "error", err)
 		return
 	}
 }
 
-func runService(parent context.Context, cfg Config, db *sql.DB) error {
+func (a *App) routes(mode string) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		status := map[string]any{"status": "ok", "version": version, "mode": mode}
+		jsonReply(w, 200, status)
+	})
+	if mode != modeAI {
+		mux.HandleFunc("GET /worktime/summary", a.authorize(a.worktime))
+		// 黄历为公开数据，不设鉴权；设备端默认地址即指向这里
+		mux.HandleFunc("GET /almanac", a.almanac)
+		mux.HandleFunc("POST /voice/context/report", a.contextReport)
+		mux.HandleFunc("GET /voice/context", a.contextRead)
+	}
+	if mode != modeCore {
+		mux.HandleFunc("GET /ai/usage", a.authorize(a.aiUsage))
+	}
+	return mux
+}
+
+func runService(parent context.Context, cfg Config, db *sql.DB, mode string) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	app := &App{cfg: cfg, db: db, client: &http.Client{Timeout: 12 * time.Second}}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		status := map[string]any{"status": "ok", "version": version}
-		jsonReply(w, 200, status)
-	})
-	mux.HandleFunc("GET /worktime/summary", app.authorize(app.worktime))
-	mux.HandleFunc("GET /ai/usage", app.authorize(app.aiUsage))
-	// 黄历为公开数据，不设鉴权；设备端默认地址即指向这里
-	mux.HandleFunc("GET /almanac", app.almanac)
-	mux.HandleFunc("POST /voice/context/report", app.contextReport)
-	mux.HandleFunc("GET /voice/context", app.contextRead)
-
-	server := &http.Server{Addr: cfg.Server.Listen, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	server := &http.Server{Addr: cfg.Server.Listen, Handler: app.routes(mode), ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		<-ctx.Done()
 		shutdown, done := context.WithTimeout(context.Background(), 5*time.Second)
 		defer done()
 		_ = server.Shutdown(shutdown)
 	}()
-	slog.Info("deskwong service started", "listen", cfg.Server.Listen, "version", version)
+	slog.Info("deskwong service started", "listen", cfg.Server.Listen, "version", version, "mode", mode)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		slog.Error("http server", "error", err)
 		return err
